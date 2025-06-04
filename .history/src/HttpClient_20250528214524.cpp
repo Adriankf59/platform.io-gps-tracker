@@ -116,18 +116,15 @@ void HttpClientWrapper::logHttpError(int error, const char* operation) {
 }
 
 bool HttpClientWrapper::testConnection() {
-  LOG_INFO(MODULE_HTTP, "🔍 Testing server connectivity...");
-  LOG_INFO(MODULE_HTTP, "Target: %s://%s:%d", "http", SERVER_HOST, SERVER_PORT);
+  LOG_INFO(MODULE_HTTP, "Testing server connectivity...");
   
   String response;
   bool result = get("/", response);
   
   if (result) {
-    LOG_INFO(MODULE_HTTP, "✅ Server connectivity test SUCCESSFUL");
-    LOG_INFO(MODULE_HTTP, "✅ Server is reachable and responding");
+    LOG_INFO(MODULE_HTTP, "Server connectivity test successful");
   } else {
-    LOG_ERROR(MODULE_HTTP, "❌ Server connectivity test FAILED");
-    LOG_ERROR(MODULE_HTTP, "❌ Cannot establish connection to server");
+    LOG_ERROR(MODULE_HTTP, "Server connectivity test failed");
   }
   
   return result;

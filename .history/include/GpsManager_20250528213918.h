@@ -37,12 +37,10 @@ public:
   }
   float getLatitude() const { return gps.location.lat(); }
   float getLongitude() const { return gps.location.lng(); }
-  float getSpeed() const { return gps.speed.kmph(); }
-  bool isSpeedValid() const { return gps.speed.isValid(); }
   int getSatellites() const;
   
   // For unit testing
   friend class GpsManagerTest;
 };
 
-#endif // GPS_MANAGER_H
+#endif // GPS_MANAGER_H@

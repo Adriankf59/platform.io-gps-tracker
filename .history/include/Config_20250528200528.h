@@ -25,8 +25,8 @@
 // ----- SERVER CONFIGURATION -----
 #define SERVER_HOST "ec2-13-229-83-7.ap-southeast-1.compute.amazonaws.com"
 #define SERVER_PORT 8055
-#define GPS_ENDPOINT "/items/vehicle_datas"
-#define VEHICLE_DATA_ENDPOINT "/items/vehicle_datas"
+#define GPS_ENDPOINT "/items/vehicle_data"
+#define RELAY_ENDPOINT "/items/relays"
 #define DEVICE_ID 1
 #define RELAY_ID 1
 #define APN ""              // APN automatic detection
@@ -52,9 +52,5 @@
 #define MODULE_RELAY "RELAY"
 #define MODULE_HTTP "HTTP"
 #define MODULE_SYS "SYSTEM"
-
-// Add new
-#define API_BASE_URL "http://ec2-13-229-83-7.ap-southeast-1.compute.amazonaws.com:8055"
-#define GPS_ID "2d7a9833-872f-4523-b0e4-c36734940a6f"
 
 #endif // CONFIG_H

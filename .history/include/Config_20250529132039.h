@@ -27,6 +27,7 @@
 #define SERVER_PORT 8055
 #define GPS_ENDPOINT "/items/vehicle_datas"
 #define VEHICLE_DATA_ENDPOINT "/items/vehicle_datas"
+#define RELAY_ENDPOINT "/items/commands"
 #define DEVICE_ID 1
 #define RELAY_ID 1
 #define APN ""              // APN automatic detection
@@ -55,6 +56,8 @@
 
 // Add new
 #define API_BASE_URL "http://ec2-13-229-83-7.ap-southeast-1.compute.amazonaws.com:8055"
+#define VEHICLE_ID "1"
 #define GPS_ID "2d7a9833-872f-4523-b0e4-c36734940a6f"
+#define ADMIN_USER_ID "c84b5015-ac42-45b1-9c36-7d8114ae8b5a"
 
 #endif // CONFIG_H

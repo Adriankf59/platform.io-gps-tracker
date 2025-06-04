@@ -60,17 +60,16 @@ void GpsManager::clearBuffer() {
 }
 
 void GpsManager::getTimestamp(char* timestampStr, size_t maxLen) {
-  // Default timestamp if GPS is not valid (UTC format)
-  strcpy(timestampStr, "2025-01-15T21:09:00Z");
+  // Default timestamp if GPS is not valid
+  strcpy(timestampStr, "2025-01-15T21:09:00+07:00");
   
   if (gps.date.isValid() && gps.time.isValid()) {
-    // Use UTC time (offset 0) instead of WIB
     Utils::formatISO8601(timestampStr, maxLen,
                         gps.date.year(), gps.date.month(), gps.date.day(),
                         gps.time.hour(), gps.time.minute(), gps.time.second(),
-                        0); // UTC offset = 0
+                        UTC_OFFSET);
     
-    LOG_DEBUG(MODULE_GPS, "GPS Time (UTC): %s", timestampStr);
+    LOG_DEBUG(MODULE_GPS, "GPS Time (WIB): %s", timestampStr);
   } else {
     LOG_DEBUG(MODULE_GPS, "GPS time data invalid, using default");
   }

@@ -27,6 +27,7 @@
 #define SERVER_PORT 8055
 #define GPS_ENDPOINT "/items/vehicle_datas"
 #define VEHICLE_DATA_ENDPOINT "/items/vehicle_datas"
+#define RELAY_ENDPOINT "/items/commands"
 #define DEVICE_ID 1
 #define RELAY_ID 1
 #define APN ""              // APN automatic detection

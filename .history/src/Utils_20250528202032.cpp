@@ -31,7 +31,7 @@ void Utils::feedWatchdog() {
 }
 
 void Utils::formatISO8601(char* buffer, size_t size, int year, int month, int day,
-                          int hour, int minute, int second, int utcOffset) {
+                         int hour, int minute, int second, int utcOffset) {
   // Add UTC offset to hour
   hour += utcOffset;
   
@@ -65,14 +65,9 @@ void Utils::formatISO8601(char* buffer, size_t size, int year, int month, int da
     }
   }
   
-  // Format with timezone - use Z for UTC (offset 0)
-  if (utcOffset == 0) {
-    snprintf(buffer, size, "%04d-%02d-%02dT%02d:%02d:%02dZ",
-             year, month, day, hour, minute, second);
-  } else {
-    snprintf(buffer, size, "%04d-%02d-%02dT%02d:%02d:%02d+%02d:00",
-             year, month, day, hour, minute, second, utcOffset);
-  }
+  // Format with timezone offset
+  snprintf(buffer, size, "%04d-%02d-%02dT%02d:%02d:%02d+%02d:00",
+           year, month, day, hour, minute, second, utcOffset);
 }
 
 String Utils::formatUptime(unsigned long millis) {

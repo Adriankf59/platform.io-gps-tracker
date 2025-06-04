@@ -373,7 +373,8 @@ bool updateRelayStatus(bool state) {
   // Construct the payload according to the specified format
   String payload = "{\"data\":[{";
   payload += "\"command_id\":1,";
-  payload += "\"gps_id\":\"" + String(GPS_ID) + "\",";
+  payload += "\"vehicle_id\":\"1\",";
+  payload += "\"issued_by\":\"c84b5015-ac42-45b1-9c36-7d8114ae8b5a\",";
   payload += "\"command_type\":\"" + commandType + "\",";
   payload += "\"status\":\"executed\",";
   payload += "\"date_sent\":\"" + String(timestamp) + "\"";
@@ -457,26 +458,13 @@ bool checkVehicleRelayStatus() {
   for (JsonObject vehicle : vehicles) {
     if (vehicle.containsKey("gps_id") &&
         vehicle["gps_id"].as<String>() == String(GPS_ID)) {
-      vehicleFound = true;
-      
-      if (vehicle.containsKey("relay_status") && !vehicle["relay_status"].isNull()) {
-        apiRelayStatus = vehicle["relay_status"].as<String>();
-      }
-      break;
-    }
-  }
-  
-  if (!vehicleFound) {
-    LOG_WARN(MODULE_RELAY, "GPS ID %s not found in API response", GPS_ID);
-    return false;
-  }
   
   if (apiRelayStatus.isEmpty()) {
-    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for GPS ID %s", GPS_ID);
+    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for vehicle %s", VEHICLE_ID);
     return true; // Consider this successful but no action needed
   }
   
-  LOG_INFO(MODULE_RELAY, "API relay status for GPS ID %s: %s", GPS_ID, apiRelayStatus.c_str());
+  LOG_INFO(MODULE_RELAY, "API relay status for vehicle %s: %s", VEHICLE_ID, apiRelayStatus.c_str());
   
   // Compare with current relay state and update if different
   bool apiRelayOn = (apiRelayStatus == "ON");
@@ -538,6 +526,7 @@ void handleSerialCommands() {
       }
       
       LOG_INFO(MODULE_MAIN, "GPS ID: %s", GPS_ID);
+      LOG_INFO(MODULE_MAIN, "Vehicle ID: %s", VEHICLE_ID);
       LOG_INFO(MODULE_MAIN, "Timestamp: %s", isoTimestamp.c_str());
       
       if (gpsManager.isValid()) {

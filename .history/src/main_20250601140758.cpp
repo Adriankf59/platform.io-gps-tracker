@@ -373,7 +373,8 @@ bool updateRelayStatus(bool state) {
   // Construct the payload according to the specified format
   String payload = "{\"data\":[{";
   payload += "\"command_id\":1,";
-  payload += "\"gps_id\":\"" + String(GPS_ID) + "\",";
+  payload += "\"vehicle_id\":\"1\",";
+  payload += "\"issued_by\":\"c84b5015-ac42-45b1-9c36-7d8114ae8b5a\",";
   payload += "\"command_type\":\"" + commandType + "\",";
   payload += "\"status\":\"executed\",";
   payload += "\"date_sent\":\"" + String(timestamp) + "\"";
@@ -472,7 +473,7 @@ bool checkVehicleRelayStatus() {
   }
   
   if (apiRelayStatus.isEmpty()) {
-    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for GPS ID %s", GPS_ID);
+    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for vehicle %s", VEHICLE_ID);
     return true; // Consider this successful but no action needed
   }
   
@@ -538,6 +539,7 @@ void handleSerialCommands() {
       }
       
       LOG_INFO(MODULE_MAIN, "GPS ID: %s", GPS_ID);
+      LOG_INFO(MODULE_MAIN, "Vehicle ID: %s", VEHICLE_ID);
       LOG_INFO(MODULE_MAIN, "Timestamp: %s", isoTimestamp.c_str());
       
       if (gpsManager.isValid()) {

@@ -24,18 +24,9 @@ bool HttpClientWrapper::patch(const char* path, const String& payload, String& r
   return performRequest("PATCH", path, &payload, response);
 }
 
-bool HttpClientWrapper::performRequest(const char* method, const char* path,
+bool HttpClientWrapper::performRequest(const char* method, const char* path, 
                                       const String* payload, String& response) {
-  // Ensure path starts with /
-  String fullPath = path;
-  if (!fullPath.startsWith("/")) {
-    fullPath = "/" + fullPath;
-  }
-
-  LOG_INFO(MODULE_HTTP, "→ %s %s://%s:%d%s", method, "http", SERVER_HOST, SERVER_PORT, fullPath.c_str());
-  if (payload && payload->length() > 0) {
-    LOG_DEBUG(MODULE_HTTP, "Request payload size: %d bytes", payload->length());
-  }
+  LOG_DEBUG(MODULE_HTTP, "%s %s", method, path);
   
   // Create new HTTP client for each request
   if (http) {
@@ -50,12 +41,10 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
   int err = 0;
   
   if (strcmp(method, "GET") == 0) {
-    http->beginRequest();
-    http->get(fullPath);
-    http->endRequest();
+    err = http->get(path);
   } else if (strcmp(method, "POST") == 0 && payload) {
     http->beginRequest();
-    http->post(fullPath);
+    http->post(path);
     http->sendHeader("Content-Type", "application/json");
     http->sendHeader("Content-Length", String(payload->length()));
     http->beginBody();
@@ -63,7 +52,7 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
     http->endRequest();
   } else if (strcmp(method, "PATCH") == 0 && payload) {
     http->beginRequest();
-    http->patch(fullPath);
+    http->patch(path);
     http->sendHeader("Content-Type", "application/json");
     http->sendHeader("Content-Length", String(payload->length()));
     http->beginBody();
@@ -84,14 +73,8 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
   int statusCode = http->responseStatusCode();
   response = http->responseBody();
   
-  LOG_INFO(MODULE_HTTP, "← Response: %d (%s), body: %d bytes",
-           statusCode,
-           (statusCode >= 200 && statusCode < 300) ? "SUCCESS" : "ERROR",
-           response.length());
-  
-  if (response.length() > 0 && response.length() < 200) {
-    LOG_DEBUG(MODULE_HTTP, "Response body: %s", response.c_str());
-  }
+  LOG_DEBUG(MODULE_HTTP, "Response status: %d, body length: %d", 
+            statusCode, response.length());
   
   // Close connection
   http->stop();
@@ -99,10 +82,9 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
   
   // Check status code
   if (statusCode >= 200 && statusCode < 300) {
-    LOG_INFO(MODULE_HTTP, "✓ HTTP %s request successful", method);
     return true;
   } else {
-    LOG_ERROR(MODULE_HTTP, "✗ HTTP %s failed with status %d", method, statusCode);
+    LOG_ERROR(MODULE_HTTP, "%s failed with status %d", method, statusCode);
     if (response.length() > 0) {
       LOG_DEBUG(MODULE_HTTP, "Error response: %s", response.c_str());
     }
@@ -116,18 +98,15 @@ void HttpClientWrapper::logHttpError(int error, const char* operation) {
 }
 
 bool HttpClientWrapper::testConnection() {
-  LOG_INFO(MODULE_HTTP, "🔍 Testing server connectivity...");
-  LOG_INFO(MODULE_HTTP, "Target: %s://%s:%d", "http", SERVER_HOST, SERVER_PORT);
+  LOG_INFO(MODULE_HTTP, "Testing server connectivity...");
   
   String response;
   bool result = get("/", response);
   
   if (result) {
-    LOG_INFO(MODULE_HTTP, "✅ Server connectivity test SUCCESSFUL");
-    LOG_INFO(MODULE_HTTP, "✅ Server is reachable and responding");
+    LOG_INFO(MODULE_HTTP, "Server connectivity test successful");
   } else {
-    LOG_ERROR(MODULE_HTTP, "❌ Server connectivity test FAILED");
-    LOG_ERROR(MODULE_HTTP, "❌ Cannot establish connection to server");
+    LOG_ERROR(MODULE_HTTP, "Server connectivity test failed");
   }
   
   return result;

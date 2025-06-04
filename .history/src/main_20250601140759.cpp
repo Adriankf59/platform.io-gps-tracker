@@ -472,7 +472,7 @@ bool checkVehicleRelayStatus() {
   }
   
   if (apiRelayStatus.isEmpty()) {
-    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for GPS ID %s", GPS_ID);
+    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for vehicle %s", VEHICLE_ID);
     return true; // Consider this successful but no action needed
   }
   
@@ -538,6 +538,7 @@ void handleSerialCommands() {
       }
       
       LOG_INFO(MODULE_MAIN, "GPS ID: %s", GPS_ID);
+      LOG_INFO(MODULE_MAIN, "Vehicle ID: %s", VEHICLE_ID);
       LOG_INFO(MODULE_MAIN, "Timestamp: %s", isoTimestamp.c_str());
       
       if (gpsManager.isValid()) {

@@ -50,7 +50,7 @@ SystemState currentState = STATE_INIT;
 unsigned long lastGpsSendTime = 0;
 unsigned long lastRelayCheckTime = 0;
 unsigned long lastSuccessfulOperation = 0;
-bool relayState = true; // Default relay state is ON
+bool relayState = false;
 
 // ----- FUNCTION PROTOTYPES -----
 void handleInitState();
@@ -60,10 +60,12 @@ void handleConnectionRecoveryState();
 void handleSerialCommands();
 void printStatus();
 void printHelp();
+bool sendGpsData();
 bool sendVehicleData();
 bool testServerConnectivity();
+bool checkRelayStatus();
 bool updateRelayStatus(bool state);
-bool checkVehicleRelayStatus();
+bool updateCommandStatus(const String& commandId, const String& status);
 
 // ----- SETUP -----
 void setup() {
@@ -82,7 +84,7 @@ void setup() {
   
   // Initialize hardware
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, RELAY_ON); // Default relay state is ON
+  digitalWrite(RELAY_PIN, RELAY_OFF);
   
   // Initialize managers
   gpsManager.begin();
@@ -178,9 +180,9 @@ void handleOperationalState() {
     }
   }
   
-  // Check if time to check relay from vehicle API
+  // Check if time to check relay
   if (currentTime - lastRelayCheckTime >= RELAY_CHECK_INTERVAL) {
-    if (checkVehicleRelayStatus()) {
+    if (checkRelayStatus()) {
       lastRelayCheckTime = currentTime;
       lastSuccessfulOperation = currentTime;
     }
@@ -210,12 +212,18 @@ void handleConnectionRecoveryState() {
   if (modemManager.connectGprs()) {
     LOG_INFO(MODULE_SYS, "Connection recovery successful");
     currentState = STATE_OPERATIONAL;
-    lastSuccessfulOperation = millis(); // Reset the timeout counter
   } else {
     LOG_ERROR(MODULE_SYS, "Connection recovery failed, trying modem reset");
     modemManager.startReset();
     currentState = STATE_MODEM_RESET;
   }
+}
+
+// ----- GPS OPERATIONS -----
+bool sendGpsData() {
+  // This function is now replaced by sendVehicleData()
+  // Redirect to the new implementation
+  return sendVehicleData();
 }
 
 // ----- VEHICLE DATA OPERATIONS -----
@@ -227,61 +235,44 @@ bool sendVehicleData() {
   
   LOG_INFO(MODULE_GPS, "Sending vehicle data...");
   
-  // Prepare timestamp in ISO format (UTC)
+  // Prepare timestamp in ISO format
   char timestamp[30];
   gpsManager.getTimestamp(timestamp, sizeof(timestamp));
   
   // Convert timestamp to the required format (2025-05-28T04:42:26.000Z)
   String isoTimestamp = String(timestamp);
-  if (isoTimestamp.endsWith("Z")) {
-    // Already in UTC format, just add milliseconds
-    isoTimestamp.replace("Z", ".000Z");
-  } else {
-    // Fallback: replace any timezone with .000Z
-    int tzIndex = isoTimestamp.lastIndexOf('+');
-    if (tzIndex == -1) tzIndex = isoTimestamp.lastIndexOf('-', isoTimestamp.length() - 6);
-    if (tzIndex > 0) {
-      isoTimestamp = isoTimestamp.substring(0, tzIndex) + ".000Z";
-    } else {
-      isoTimestamp += ".000Z";
-    }
-  }
+  isoTimestamp.replace("+07:00", ".000Z");
   
   // Create JSON payload in the required format for vehicle_datas
   DynamicJsonDocument doc(1024);
+  JsonArray dataArray = doc.createNestedArray("data");
+  JsonObject vehicleData = dataArray.createNestedObject();
   
   // GPS data
   if (gpsManager.isValid()) {
-    doc["latitude"] = String(gpsManager.getLatitude(), 5);  // 5 decimal places
-    doc["longitude"] = String(gpsManager.getLongitude(), 5); // 5 decimal places
-    doc["satellites_used"] = gpsManager.getSatellites();
-    
-    // Add speed data from GPS
-    if (gpsManager.isSpeedValid()) {
-      doc["speed"] = static_cast<int>(gpsManager.getSpeed()); // Convert to int as in NEW SKETCH
-    } else {
-      doc["speed"] = nullptr;
-    }
+    vehicleData["latitude"] = String(gpsManager.getLatitude(), 5);  // 5 decimal places
+    vehicleData["longitude"] = String(gpsManager.getLongitude(), 5); // 5 decimal places
+    vehicleData["satellites_used"] = gpsManager.getSatellites();
   } else {
-    doc["latitude"] = nullptr;
-    doc["longitude"] = nullptr;
-    doc["satellites_used"] = nullptr;
-    doc["speed"] = nullptr;
+    vehicleData["latitude"] = nullptr;
+    vehicleData["longitude"] = nullptr;
+    vehicleData["satellites_used"] = nullptr;
   }
   
   // Fields to be left empty as requested
-  doc["rpm"] = nullptr;
-  doc["fuel_level"] = nullptr;
-  doc["ignition_status"] = nullptr;
+  vehicleData["speed"] = nullptr;
+  vehicleData["rpm"] = nullptr;
+  vehicleData["fuel_level"] = nullptr;
+  vehicleData["ignition_status"] = nullptr;
   
   // Battery level as specified
-  doc["battery_level"] = 12.5;
+  vehicleData["battery_level"] = 12.5;
   
   // Timestamp
-  doc["timestamp"] = isoTimestamp;
+  vehicleData["timestamp"] = isoTimestamp;
   
   // GPS ID at the end as requested
-  doc["gps_id"] = GPS_ID;  // UUID from config
+  vehicleData["gps_id"] = GPS_ID;  // UUID from config
   
   String payload;
   serializeJson(doc, payload);
@@ -299,14 +290,8 @@ bool sendVehicleData() {
         LOG_INFO(MODULE_GPS, "✅ Vehicle data sent successfully to server");
         LOG_INFO(MODULE_GPS, "📊 Data sent: gps_id=%s, timestamp=%s", GPS_ID, isoTimestamp.c_str());
         if (gpsManager.isValid()) {
-          if (gpsManager.isSpeedValid()) {
-            LOG_INFO(MODULE_GPS, "📍 GPS: lat=%.6f, lon=%.6f, speed=%.1f km/h, sats=%d",
-                     gpsManager.getLatitude(), gpsManager.getLongitude(),
-                     gpsManager.getSpeed(), gpsManager.getSatellites());
-          } else {
-            LOG_INFO(MODULE_GPS, "📍 GPS: lat=%.6f, lon=%.6f, speed=N/A, sats=%d",
-                     gpsManager.getLatitude(), gpsManager.getLongitude(), gpsManager.getSatellites());
-          }
+          LOG_INFO(MODULE_GPS, "📍 GPS: lat=%.6f, lon=%.6f, sats=%d",
+                   gpsManager.getLatitude(), gpsManager.getLongitude(), gpsManager.getSatellites());
         } else {
           LOG_INFO(MODULE_GPS, "📍 GPS: No valid fix");
         }
@@ -352,6 +337,146 @@ bool testServerConnectivity() {
 }
 
 // ----- RELAY OPERATIONS -----
+bool checkRelayStatus() {
+  if (!modemManager.ensureConnection()) {
+    LOG_ERROR(MODULE_RELAY, "No connection for relay check");
+    return false;
+  }
+  
+  LOG_INFO(MODULE_RELAY, "Checking relay commands...");
+  
+  // Format Directus API filter query correctly
+  String endpoint = String(RELAY_ENDPOINT);
+  endpoint += "?filter[vehicle_id][_eq]=" + String(VEHICLE_ID);
+  endpoint += "&filter[status][_eq]=pending";
+  endpoint += "&sort=-date_sent"; // Sort by newest first
+  
+  String response;
+  bool success = Utils::retryOperation(
+    MODULE_RELAY,
+    "Relay check",
+    [&]() {
+      return httpClient.get(endpoint.c_str(), response);
+    },
+    MAX_HTTP_RETRIES
+  );
+  
+  if (!success) {
+    LOG_ERROR(MODULE_RELAY, "Failed to get commands from API");
+    return false;
+  }
+  
+  // Parse response
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, response);
+  
+  if (error) {
+    LOG_ERROR(MODULE_RELAY, "JSON parsing failed: %s", error.c_str());
+    return false;
+  }
+  
+  // Check Directus API response format
+  if (!doc.containsKey("data") || !doc["data"].is<JsonArray>()) {
+    LOG_ERROR(MODULE_RELAY, "Invalid response format");
+    LOG_DEBUG(MODULE_RELAY, "Response: %s", response.c_str());
+    return false;
+  }
+  
+  JsonArray commands = doc["data"].as<JsonArray>();
+  
+  if (commands.size() == 0) {
+    LOG_DEBUG(MODULE_RELAY, "No pending commands");
+    return true;
+  }
+  
+  // Process the first command
+  JsonObject command = commands[0];
+  
+  String commandId = "";
+  // Try different possible field names for command ID
+  if (command.containsKey("command_id") && !command["command_id"].isNull()) {
+    commandId = command["command_id"].as<String>();
+  } else if (command.containsKey("id") && !command["id"].isNull()) {
+    commandId = command["id"].as<String>();
+  }
+  
+  String commandType = command.containsKey("command_type") ?
+                      command["command_type"].as<String>() : "";
+  
+  LOG_INFO(MODULE_RELAY, "Received command: %s (ID: %s)",
+           commandType.c_str(), commandId.c_str());
+  
+  // Execute command first
+  bool commandExecuted = false;
+  if (commandType == "ENGINE_ON") {
+    LOG_INFO(MODULE_RELAY, "🔌 Executing ENGINE_ON command - Turning relay ON");
+    digitalWrite(RELAY_PIN, RELAY_ON);
+    relayState = true;
+    commandExecuted = true;
+  } else if (commandType == "ENGINE_OFF") {
+    LOG_INFO(MODULE_RELAY, "🔌 Executing ENGINE_OFF command - Turning relay OFF");
+    digitalWrite(RELAY_PIN, RELAY_OFF);
+    relayState = false;
+    commandExecuted = true;
+  } else {
+    LOG_WARN(MODULE_RELAY, "Unknown command type: %s", commandType.c_str());
+    return false;
+  }
+  
+  // Update command status to "acknowledge" if command was executed
+  if (commandExecuted && !commandId.isEmpty()) {
+    LOG_INFO(MODULE_RELAY, "📤 Sending acknowledge status for command %s", commandId.c_str());
+    return updateCommandStatus(commandId, "acknowledge");
+  } else if (commandId.isEmpty()) {
+    LOG_WARN(MODULE_RELAY, "⚠️ Command ID is empty, cannot send acknowledge status");
+    LOG_INFO(MODULE_RELAY, "✅ Command executed successfully but status not updated");
+    return true; // Still return success since command was executed
+  }
+  
+  return false;
+}
+
+bool updateCommandStatus(const String& commandId, const String& status) {
+  if (!modemManager.ensureConnection()) {
+    LOG_ERROR(MODULE_RELAY, "No connection for command status update");
+    return false;
+  }
+  
+  LOG_INFO(MODULE_RELAY, "📤 Updating command %s status to %s",
+           commandId.c_str(), status.c_str());
+  
+  // Construct the endpoint for the specific command
+  String endpoint = "/items/commands/" + commandId;
+  
+  // Prepare the payload with proper JSON format
+  DynamicJsonDocument doc(256);
+  doc["status"] = status;
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  LOG_DEBUG(MODULE_RELAY, "Status update payload: %s", payload.c_str());
+  
+  String response;
+  bool success = Utils::retryOperation(
+    MODULE_RELAY,
+    "Command status update",
+    [&]() {
+      bool result = httpClient.patch(endpoint.c_str(), payload, response);
+      if (result) {
+        LOG_INFO(MODULE_RELAY, "✅ Command status updated successfully");
+        LOG_INFO(MODULE_RELAY, "📋 Command %s marked as %s", commandId.c_str(), status.c_str());
+        LOG_DEBUG(MODULE_RELAY, "Server response: %s", response.c_str());
+      } else {
+        LOG_ERROR(MODULE_RELAY, "❌ Failed to update command status");
+      }
+      return result;
+    },
+    MAX_HTTP_RETRIES
+  );
+  
+  return success;
+}
 
 bool updateRelayStatus(bool state) {
   if (!modemManager.ensureConnection()) {
@@ -373,7 +498,8 @@ bool updateRelayStatus(bool state) {
   // Construct the payload according to the specified format
   String payload = "{\"data\":[{";
   payload += "\"command_id\":1,";
-  payload += "\"gps_id\":\"" + String(GPS_ID) + "\",";
+  payload += "\"vehicle_id\":\"1\",";
+  payload += "\"issued_by\":\"c84b5015-ac42-45b1-9c36-7d8114ae8b5a\",";
   payload += "\"command_type\":\"" + commandType + "\",";
   payload += "\"status\":\"executed\",";
   payload += "\"date_sent\":\"" + String(timestamp) + "\"";
@@ -400,104 +526,6 @@ bool updateRelayStatus(bool state) {
   return false;
 }
 
-// ----- VEHICLE RELAY STATUS CHECK -----
-bool checkVehicleRelayStatus() {
-  if (!modemManager.ensureConnection()) {
-    LOG_ERROR(MODULE_RELAY, "No connection for vehicle relay status check");
-    return false;
-  }
-  
-  LOG_INFO(MODULE_RELAY, "Checking vehicle relay status from API...");
-  
-  // Use the vehicle endpoint
-  String endpoint = "/items/vehicle";
-  
-  String response;
-  bool success = Utils::retryOperation(
-    MODULE_RELAY,
-    "Vehicle relay status check",
-    [&]() {
-      return httpClient.get(endpoint.c_str(), response);
-    },
-    MAX_HTTP_RETRIES
-  );
-  
-  if (!success) {
-    LOG_ERROR(MODULE_RELAY, "Failed to get vehicle data from API");
-    return false;
-  }
-  
-  // Parse response
-  DynamicJsonDocument doc(2048); // Larger buffer for vehicle data
-  DeserializationError error = deserializeJson(doc, response);
-  
-  if (error) {
-    LOG_ERROR(MODULE_RELAY, "JSON parsing failed: %s", error.c_str());
-    return false;
-  }
-  
-  // Check Directus API response format
-  if (!doc.containsKey("data") || !doc["data"].is<JsonArray>()) {
-    LOG_ERROR(MODULE_RELAY, "Invalid vehicle response format");
-    LOG_DEBUG(MODULE_RELAY, "Response: %s", response.c_str());
-    return false;
-  }
-  
-  JsonArray vehicles = doc["data"].as<JsonArray>();
-  
-  if (vehicles.size() == 0) {
-    LOG_WARN(MODULE_RELAY, "No vehicles found in API response");
-    return false;
-  }
-  
-  // Find vehicle with matching gps_id
-  bool vehicleFound = false;
-  String apiRelayStatus = "";
-  
-  for (JsonObject vehicle : vehicles) {
-    if (vehicle.containsKey("gps_id") &&
-        vehicle["gps_id"].as<String>() == String(GPS_ID)) {
-      vehicleFound = true;
-      
-      if (vehicle.containsKey("relay_status") && !vehicle["relay_status"].isNull()) {
-        apiRelayStatus = vehicle["relay_status"].as<String>();
-      }
-      break;
-    }
-  }
-  
-  if (!vehicleFound) {
-    LOG_WARN(MODULE_RELAY, "GPS ID %s not found in API response", GPS_ID);
-    return false;
-  }
-  
-  if (apiRelayStatus.isEmpty()) {
-    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for GPS ID %s", GPS_ID);
-    return true; // Consider this successful but no action needed
-  }
-  
-  LOG_INFO(MODULE_RELAY, "API relay status for GPS ID %s: %s", GPS_ID, apiRelayStatus.c_str());
-  
-  // Compare with current relay state and update if different
-  bool apiRelayOn = (apiRelayStatus == "ON");
-  
-  if (apiRelayOn != relayState) {
-    LOG_INFO(MODULE_RELAY, "🔄 Relay status mismatch! Current: %s, API: %s",
-             relayState ? "ON" : "OFF", apiRelayStatus.c_str());
-    LOG_INFO(MODULE_RELAY, "🔌 Updating relay to match API status: %s", apiRelayStatus.c_str());
-    
-    // Update physical relay
-    digitalWrite(RELAY_PIN, apiRelayOn ? RELAY_ON : RELAY_OFF);
-    relayState = apiRelayOn;
-    
-    LOG_INFO(MODULE_RELAY, "✅ Relay updated successfully to %s", apiRelayOn ? "ON" : "OFF");
-  } else {
-    LOG_DEBUG(MODULE_RELAY, "✅ Relay status matches API: %s", apiRelayStatus.c_str());
-  }
-  
-  return true;
-}
-
 // ----- SERIAL COMMAND HANDLER -----
 void handleSerialCommands() {
   if (SerialMon.available()) {
@@ -516,39 +544,20 @@ void handleSerialCommands() {
       sendVehicleData();
     } else if (cmd == "test") {
       testServerConnectivity();
-    } else if (cmd == "vehicle") {
-      checkVehicleRelayStatus();
     } else if (cmd == "data") {
       LOG_INFO(MODULE_MAIN, "=== CURRENT VEHICLE DATA ===");
       char timestamp[30];
       gpsManager.getTimestamp(timestamp, sizeof(timestamp));
       String isoTimestamp = String(timestamp);
-      if (isoTimestamp.endsWith("Z")) {
-        // Already in UTC format, just add milliseconds
-        isoTimestamp.replace("Z", ".000Z");
-      } else {
-        // Fallback: replace any timezone with .000Z
-        int tzIndex = isoTimestamp.lastIndexOf('+');
-        if (tzIndex == -1) tzIndex = isoTimestamp.lastIndexOf('-', isoTimestamp.length() - 6);
-        if (tzIndex > 0) {
-          isoTimestamp = isoTimestamp.substring(0, tzIndex) + ".000Z";
-        } else {
-          isoTimestamp += ".000Z";
-        }
-      }
+      isoTimestamp.replace("+07:00", ".000Z");
       
       LOG_INFO(MODULE_MAIN, "GPS ID: %s", GPS_ID);
+      LOG_INFO(MODULE_MAIN, "Vehicle ID: %s", VEHICLE_ID);
       LOG_INFO(MODULE_MAIN, "Timestamp: %s", isoTimestamp.c_str());
       
       if (gpsManager.isValid()) {
-        if (gpsManager.isSpeedValid()) {
-          LOG_INFO(MODULE_MAIN, "GPS: Valid - Lat: %.6f, Lon: %.6f, Speed: %.1f km/h, Sats: %d",
-                   gpsManager.getLatitude(), gpsManager.getLongitude(),
-                   gpsManager.getSpeed(), gpsManager.getSatellites());
-        } else {
-          LOG_INFO(MODULE_MAIN, "GPS: Valid - Lat: %.6f, Lon: %.6f, Speed: N/A, Sats: %d",
-                   gpsManager.getLatitude(), gpsManager.getLongitude(), gpsManager.getSatellites());
-        }
+        LOG_INFO(MODULE_MAIN, "GPS: Valid - Lat: %.6f, Lon: %.6f, Sats: %d",
+                 gpsManager.getLatitude(), gpsManager.getLongitude(), gpsManager.getSatellites());
       } else {
         LOG_INFO(MODULE_MAIN, "GPS: No valid fix");
       }
@@ -556,7 +565,7 @@ void handleSerialCommands() {
       LOG_INFO(MODULE_MAIN, "Relay: %s", relayState ? "ON" : "OFF");
       LOG_INFO(MODULE_MAIN, "Battery Level: 12.5V");
       LOG_INFO(MODULE_MAIN, "Vehicle Data Endpoint: %s", VEHICLE_DATA_ENDPOINT);
-      LOG_INFO(MODULE_MAIN, "Vehicle Endpoint: /items/vehicle");
+      LOG_INFO(MODULE_MAIN, "Commands Endpoint: %s", RELAY_ENDPOINT);
     } else if (cmd == "reset") {
       ESP.restart();
     } else if (cmd == "loglevel") {
@@ -579,15 +588,9 @@ void printStatus() {
   
   // GPS Status
   if (gpsManager.isValid()) {
-    if (gpsManager.isSpeedValid()) {
-      LOG_INFO(MODULE_MAIN, "GPS: Valid (%.6f, %.6f) Speed: %.1f km/h, Sats: %d",
-               gpsManager.getLatitude(), gpsManager.getLongitude(),
-               gpsManager.getSpeed(), gpsManager.getSatellites());
-    } else {
-      LOG_INFO(MODULE_MAIN, "GPS: Valid (%.6f, %.6f) Speed: N/A, Sats: %d",
-               gpsManager.getLatitude(), gpsManager.getLongitude(),
-               gpsManager.getSatellites());
-    }
+    LOG_INFO(MODULE_MAIN, "GPS: Valid (%.6f, %.6f) Sats: %d", 
+             gpsManager.getLatitude(), gpsManager.getLongitude(), 
+             gpsManager.getSatellites());
   } else {
     LOG_INFO(MODULE_MAIN, "GPS: No fix");
   }
@@ -612,7 +615,6 @@ void printHelp() {
   LOG_INFO(MODULE_MAIN, "on/off   - Control relay");
   LOG_INFO(MODULE_MAIN, "gps      - Send vehicle data now");
   LOG_INFO(MODULE_MAIN, "test     - Test server connectivity");
-  LOG_INFO(MODULE_MAIN, "vehicle  - Check vehicle relay status from API");
   LOG_INFO(MODULE_MAIN, "data     - Show current vehicle data");
   LOG_INFO(MODULE_MAIN, "reset    - Restart system");
   LOG_INFO(MODULE_MAIN, "loglevel [0-4] - Set log level");

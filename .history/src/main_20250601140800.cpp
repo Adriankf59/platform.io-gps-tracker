@@ -472,7 +472,7 @@ bool checkVehicleRelayStatus() {
   }
   
   if (apiRelayStatus.isEmpty()) {
-    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for GPS ID %s", GPS_ID);
+    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for vehicle %s", VEHICLE_ID);
     return true; // Consider this successful but no action needed
   }
   
