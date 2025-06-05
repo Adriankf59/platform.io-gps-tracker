@@ -1,4 +1,4 @@
-// Config.h - Modified for Vehicle Endpoint Focus
+// Config.h - Modified for Real-time Relay Detection
 
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -19,13 +19,14 @@
 #define MOVEMENT_SPEED_THRESHOLD 5.0        // km/h - threshold untuk menentukan bergerak/diam
 #define MOVEMENT_DETECTION_SAMPLES 3        // Jumlah sample untuk stabilitas deteksi
 
-// ----- VEHICLE ENDPOINT RELAY MONITORING -----
-#define RELAY_CHECK_INTERVAL_NORMAL 5000     // 5 detik saat normal (lebih sering dari sebelumnya)
-#define RELAY_CHECK_INTERVAL_ACTIVE 2000     // 2 detik saat ada perubahan detected
-#define RELAY_CHECK_INTERVAL_REALTIME 1000   // 1 detik saat mode real-time
+// ----- ADAPTIVE RELAY MONITORING CONFIGURATION -----
+#define RELAY_CHECK_INTERVAL_NORMAL 10000    // 10 detik saat normal
+#define RELAY_CHECK_INTERVAL_FAST 2000       // 2 detik saat mode fast
+#define RELAY_CHECK_INTERVAL_REALTIME 500    // 0.5 detik saat mode real-time
 
-#define ACTIVE_MODE_DURATION 60000           // 60 detik active mode setelah perubahan
-#define REALTIME_MODE_DURATION 30000         // 30 detik real-time mode untuk test
+#define COMMAND_CHECK_INTERVAL 1000          // 1 detik untuk cek command queue
+#define FAST_MODE_DURATION 60000             // 60 detik fast mode setelah command
+#define REALTIME_MODE_DURATION 30000         // 30 detik real-time mode setelah command baru
 
 #define MAX_CONSECUTIVE_RELAY_FAILURES 3     // Max failures before fallback to normal mode
 
@@ -41,6 +42,7 @@
 #define SERVER_PORT 8055
 #define GPS_ENDPOINT "/items/vehicle_datas"
 #define VEHICLE_DATA_ENDPOINT "/items/vehicle_datas"
+#define COMMAND_ENDPOINT "/items/commands"
 #define VEHICLE_ENDPOINT "/items/vehicle"
 #define DEVICE_ID 1
 #define RELAY_ID 1
@@ -65,7 +67,7 @@
 #define MODULE_GPS "GPS"
 #define MODULE_MODEM "MODEM"
 #define MODULE_RELAY "RELAY"
-#define MODULE_VEHICLE "VEHICLE"
+#define MODULE_COMMAND "CMD"
 #define MODULE_HTTP "HTTP"
 #define MODULE_SYS "SYSTEM"
 

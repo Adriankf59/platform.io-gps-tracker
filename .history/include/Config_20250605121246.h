@@ -29,6 +29,7 @@
 
 #define MAX_CONSECUTIVE_RELAY_FAILURES 3     // Max failures before fallback to normal mode
 
+
 // ----- TIME CONSTANTS (ms) -----
 #define HTTP_TIMEOUT 15000              // HTTP request timeout
 #define MAX_STATE_TIME 15000            // Maximum time in a state

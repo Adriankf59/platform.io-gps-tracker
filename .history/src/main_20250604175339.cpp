@@ -1,8 +1,8 @@
 /**
- * Integrated ESP32 System with A7670C GSM Module - Vehicle Endpoint Relay Control
- * - Direct relay status checking from /items/vehicle endpoint
- * - Adaptive monitoring: Normal (5s) → Active (2s) → Real-time (1s)
- * - IMMEDIATE relay updates (consensus removed)
+ * Integrated ESP32 System with A7670C GSM Module - Real-time Relay Detection
+ * - Adaptive relay monitoring: Normal (10s) → Fast (2s) → Real-time (0.5s)
+ * - Command queue monitoring every 1 second
+ * - Event-driven mode switching for instant relay response
  * - Hybrid GPS intervals based on movement
  */
 
@@ -45,9 +45,9 @@ enum MovementState {
 
 // ----- RELAY MONITORING MODES -----
 enum RelayMonitoringMode {
-  RELAY_MODE_NORMAL,    // 5 seconds - normal operation
-  RELAY_MODE_ACTIVE,    // 2 seconds - after status change detected
-  RELAY_MODE_REALTIME   // 1 second - for manual testing or immediate response
+  RELAY_MODE_NORMAL,    // 10 seconds - normal operation
+  RELAY_MODE_FAST,      // 2 seconds - after recent command activity
+  RELAY_MODE_REALTIME   // 0.5 seconds - when new commands detected
 };
 
 // ----- GLOBAL OBJECTS -----
@@ -62,7 +62,8 @@ HttpClientWrapper httpClient(gsmClient);
 // ----- STATE VARIABLES -----
 SystemState currentState = STATE_INIT;
 unsigned long lastGpsSendTime = 0;
-unsigned long lastVehicleCheckTime = 0;
+unsigned long lastRelayCheckTime = 0;
+unsigned long lastCommandCheckTime = 0;
 unsigned long lastSuccessfulOperation = 0;
 bool relayState = true; // Default relay state is ON
 
@@ -73,21 +74,13 @@ int speedSampleIndex = 0;
 bool speedSamplesReady = false;
 unsigned long lastMovementLogTime = 0;
 
-// ----- VEHICLE ENDPOINT RELAY MONITORING VARIABLES -----
+// ----- RELAY MONITORING VARIABLES -----
 RelayMonitoringMode currentRelayMode = RELAY_MODE_NORMAL;
 unsigned long relayModeStartTime = 0;
 unsigned long lastRelayModeLogTime = 0;
 int consecutiveRelayFailures = 0;
-unsigned long lastStatusChangeTime = 0;
-
-// Simplified variables - consensus-based variables removed
-String lastApiRelayStatus = "";
-bool relayStatusStable = true;
-
-// REMOVED VARIABLES (no longer needed for immediate updates):
-// String pendingRelayStatus = "";
-// int consecutiveStatusCount = 0;
-
+int lastProcessedCommandId = 0;
+unsigned long lastCommandDetectedTime = 0;
 
 // ----- FUNCTION PROTOTYPES -----
 void handleInitState();
@@ -99,7 +92,8 @@ void printStatus();
 void printHelp();
 bool sendVehicleData();
 bool testServerConnectivity();
-bool updateRelayStatusManually(bool state);
+bool updateRelayStatus(bool state);
+bool checkVehicleRelayStatus();
 
 // Movement detection functions
 void updateMovementDetection();
@@ -108,14 +102,13 @@ float getAverageSpeed();
 unsigned long getCurrentGpsInterval();
 const char* getMovementStateString(MovementState state);
 
-// Vehicle endpoint relay monitoring functions
+// Relay monitoring functions
 void updateRelayMonitoring();
-bool checkVehicleRelayStatus();
-void processRelayStatusChange(String newStatus);
+bool checkCommandQueue();
 void switchRelayMode(RelayMonitoringMode newMode);
 unsigned long getCurrentRelayInterval();
 const char* getRelayModeString(RelayMonitoringMode mode);
-bool updatePhysicalRelay(bool newState, String reason);
+bool processCommand(JsonObject command);
 
 // ----- SETUP -----
 void setup() {
@@ -127,22 +120,20 @@ void setup() {
   Logger::init(&SerialMon, LOG_INFO);
   
   LOG_INFO(MODULE_MAIN, "=== ESP32 System Starting ===");
-  LOG_INFO(MODULE_MAIN, "Version: 2.4 (Vehicle Endpoint Relay Control - Immediate Update)"); // Version updated
+  LOG_INFO(MODULE_MAIN, "Version: 2.2 (Real-time Relay Detection)");
   LOG_INFO(MODULE_MAIN, "GPS Intervals: Moving=%dms, Static=%dms", 
            GPS_SEND_INTERVAL_MOVING, GPS_SEND_INTERVAL_STATIC);
-  LOG_INFO(MODULE_MAIN, "Relay Intervals: Normal=%dms, Active=%dms, Real-time=%dms", 
-           RELAY_CHECK_INTERVAL_NORMAL, RELAY_CHECK_INTERVAL_ACTIVE, RELAY_CHECK_INTERVAL_REALTIME);
-  LOG_INFO(MODULE_MAIN, "Vehicle endpoint: %s", VEHICLE_ENDPOINT);
+  LOG_INFO(MODULE_MAIN, "Relay Intervals: Normal=%dms, Fast=%dms, Real-time=%dms", 
+           RELAY_CHECK_INTERVAL_NORMAL, RELAY_CHECK_INTERVAL_FAST, RELAY_CHECK_INTERVAL_REALTIME);
+  LOG_INFO(MODULE_MAIN, "Command check interval: %dms", COMMAND_CHECK_INTERVAL);
   
   // Initialize movement detection arrays
   for (int i = 0; i < MOVEMENT_DETECTION_SAMPLES; i++) {
     speedSamples[i] = 0.0;
   }
   
-  // Initialize relay monitoring (in setup() function)
+  // Initialize relay monitoring
   relayModeStartTime = millis();
-  lastApiRelayStatus = "UNKNOWN";
-  relayStatusStable = true;  // Simplified initialization
   
   // Initialize watchdog
   Utils::initWatchdog(WATCHDOG_TIMEOUT);
@@ -217,37 +208,45 @@ void loop() {
   delay(10);
 }
 
-// ----- VEHICLE ENDPOINT RELAY MONITORING FUNCTIONS -----
+// ----- RELAY MONITORING FUNCTIONS -----
 void updateRelayMonitoring() {
   unsigned long currentTime = millis();
   
-  // Handle relay mode transitions based on time since last status change
-  unsigned long timeSinceLastChange = currentTime - lastStatusChangeTime;
+  // Check command queue every 1 second
+  if (currentTime - lastCommandCheckTime >= COMMAND_CHECK_INTERVAL) {
+    if (checkCommandQueue()) {
+      lastCommandCheckTime = currentTime;
+      lastSuccessfulOperation = currentTime;
+    }
+  }
+  
+  // Handle relay mode transitions
+  unsigned long timeSinceLastCommand = currentTime - lastCommandDetectedTime;
   
   switch (currentRelayMode) {
     case RELAY_MODE_REALTIME:
-      // Switch to active mode after real-time duration
-      if (timeSinceLastChange >= REALTIME_MODE_DURATION) {
-        switchRelayMode(RELAY_MODE_ACTIVE);
+      // Switch to fast mode after real-time duration
+      if (timeSinceLastCommand >= REALTIME_MODE_DURATION) {
+        switchRelayMode(RELAY_MODE_FAST);
       }
       break;
       
-    case RELAY_MODE_ACTIVE:
-      // Switch to normal mode after active duration
-      if (timeSinceLastChange >= ACTIVE_MODE_DURATION) {
+    case RELAY_MODE_FAST:
+      // Switch to normal mode after fast duration
+      if (timeSinceLastCommand >= FAST_MODE_DURATION) {
         switchRelayMode(RELAY_MODE_NORMAL);
       }
       break;
       
     case RELAY_MODE_NORMAL:
-      // Stay in normal mode unless manual override
+      // Stay in normal mode unless new command detected
       break;
   }
   
   // Fallback to normal mode after consecutive failures
   if (consecutiveRelayFailures >= MAX_CONSECUTIVE_RELAY_FAILURES) {
     if (currentRelayMode != RELAY_MODE_NORMAL) {
-      LOG_WARN(MODULE_VEHICLE, "Too many failures, falling back to normal mode");
+      LOG_WARN(MODULE_RELAY, "Too many failures, falling back to normal mode");
       switchRelayMode(RELAY_MODE_NORMAL);
     }
     consecutiveRelayFailures = 0; // Reset counter
@@ -255,36 +254,34 @@ void updateRelayMonitoring() {
   
   // Log relay mode status periodically
   if (currentTime - lastRelayModeLogTime >= 60000) { // Every minute
-    LOG_INFO(MODULE_VEHICLE, "📡 Vehicle endpoint monitoring: %s mode (interval: %lums)", 
+    LOG_INFO(MODULE_RELAY, "📡 Relay monitoring: %s mode (interval: %lums)", 
              getRelayModeString(currentRelayMode), getCurrentRelayInterval());
-    LOG_INFO(MODULE_VEHICLE, "📊 Last API status: %s, Physical relay: %s, Failures: %d", 
-             lastApiRelayStatus.c_str(), relayState ? "ON" : "OFF", consecutiveRelayFailures);
     lastRelayModeLogTime = currentTime;
   }
 }
 
-bool checkVehicleRelayStatus() {
+bool checkCommandQueue() {
   if (!modemManager.ensureConnection()) {
-    consecutiveRelayFailures++;
-    LOG_DEBUG(MODULE_VEHICLE, "No connection for vehicle relay status check (failures: %d)", 
-              consecutiveRelayFailures);
+    LOG_DEBUG(MODULE_COMMAND, "No connection for command check");
     return false;
   }
   
-  LOG_DEBUG(MODULE_VEHICLE, "🔍 Checking vehicle relay status... [%s mode]", 
-            getRelayModeString(currentRelayMode));
+  LOG_DEBUG(MODULE_COMMAND, "Checking command queue...");
+  
+  // Build query to get unprocessed commands for this GPS ID
+  String endpoint = "/items/commands?filter[gps_id][_eq]=" + String(GPS_ID) + 
+                   "&filter[status][_eq]=pending&sort=-date_sent&limit=10";
   
   String response;
-  bool success = httpClient.get(VEHICLE_ENDPOINT, response);
+  bool success = httpClient.get(endpoint.c_str(), response);
   
   if (!success) {
     consecutiveRelayFailures++;
-    LOG_ERROR(MODULE_VEHICLE, "❌ Failed to get vehicle data from API (failures: %d)", 
-              consecutiveRelayFailures);
+    LOG_DEBUG(MODULE_COMMAND, "Failed to check command queue");
     return false;
   }
   
-  // Reset failure counter on successful HTTP request
+  // Reset failure counter on success
   consecutiveRelayFailures = 0;
   
   // Parse response
@@ -292,120 +289,97 @@ bool checkVehicleRelayStatus() {
   DeserializationError error = deserializeJson(doc, response);
   
   if (error) {
-    LOG_ERROR(MODULE_VEHICLE, "JSON parsing failed: %s", error.c_str());
+    LOG_ERROR(MODULE_COMMAND, "JSON parsing failed: %s", error.c_str());
     return false;
   }
   
-  // Check Directus API response format
   if (!doc.containsKey("data") || !doc["data"].is<JsonArray>()) {
-    LOG_ERROR(MODULE_VEHICLE, "Invalid vehicle response format");
-    LOG_DEBUG(MODULE_VEHICLE, "Response: %s", response.c_str());
-    return false;
+    LOG_DEBUG(MODULE_COMMAND, "No commands found or invalid format");
+    return true; // Not an error, just no commands
   }
   
-  JsonArray vehicles = doc["data"].as<JsonArray>();
+  JsonArray commands = doc["data"].as<JsonArray>();
   
-  if (vehicles.size() == 0) {
-    LOG_WARN(MODULE_VEHICLE, "No vehicles found in API response");
-    return false;
+  if (commands.size() == 0) {
+    LOG_DEBUG(MODULE_COMMAND, "✅ No pending commands");
+    return true;
   }
   
-  // Find vehicle with matching gps_id
-  bool vehicleFound = false;
-  String currentApiRelayStatus = "";
+  LOG_INFO(MODULE_COMMAND, "🔍 Found %d pending command(s)", commands.size());
   
-  for (JsonObject vehicle : vehicles) {
-    if (vehicle.containsKey("gps_id") &&
-        vehicle["gps_id"].as<String>() == String(GPS_ID)) {
-      vehicleFound = true;
+  // Process new commands
+  bool newCommandFound = false;
+  for (JsonObject command : commands) {
+    if (command.containsKey("command_id") && command["command_id"].is<int>()) {
+      int commandId = command["command_id"];
       
-      if (vehicle.containsKey("relay_status") && !vehicle["relay_status"].isNull()) {
-        currentApiRelayStatus = vehicle["relay_status"].as<String>();
-      } else {
-        currentApiRelayStatus = "NULL";
+      // Skip if we've already processed this command
+      if (commandId <= lastProcessedCommandId) {
+        continue;
       }
-      break;
+      
+      LOG_INFO(MODULE_COMMAND, "🆕 New command detected: ID=%d", commandId);
+      newCommandFound = true;
+      
+      // Process the command
+      if (processCommand(command)) {
+        lastProcessedCommandId = commandId;
+        lastCommandDetectedTime = millis();
+        
+        // Switch to real-time mode for immediate response
+        if (currentRelayMode != RELAY_MODE_REALTIME) {
+          switchRelayMode(RELAY_MODE_REALTIME);
+        }
+      }
     }
   }
   
-  if (!vehicleFound) {
-    LOG_WARN(MODULE_VEHICLE, "GPS ID %s not found in API response", GPS_ID);
-    return false;
+  if (newCommandFound) {
+    // Immediately check relay status to ensure quick response
+    checkVehicleRelayStatus();
   }
-  
-  // Process the relay status
-  processRelayStatusChange(currentApiRelayStatus);
   
   return true;
 }
 
-void processRelayStatusChange(String newApiStatus) {
-  // Log the API status check
-  if (currentRelayMode == RELAY_MODE_REALTIME) {
-    LOG_INFO(MODULE_VEHICLE, "🚀 API relay status: %s [REAL-TIME CHECK]", newApiStatus.c_str());
+bool processCommand(JsonObject command) {
+  if (!command.containsKey("command_type") || !command["command_type"].is<String>()) {
+    LOG_WARN(MODULE_COMMAND, "Invalid command: missing command_type");
+    return false;
+  }
+  
+  String commandType = command["command_type"].as<String>();
+  int commandId = command["command_id"];
+  
+  LOG_INFO(MODULE_COMMAND, "⚡ Processing command ID=%d, type=%s", commandId, commandType.c_str());
+  
+  bool newRelayState;
+  if (commandType == "ENGINE_ON") {
+    newRelayState = true;
+  } else if (commandType == "ENGINE_OFF") {
+    newRelayState = false;
   } else {
-    LOG_DEBUG(MODULE_VEHICLE, "📡 API relay status: %s", newApiStatus.c_str());
+    LOG_WARN(MODULE_COMMAND, "Unknown command type: %s", commandType.c_str());
+    return false;
   }
   
-  // Handle NULL or empty status
-  if (newApiStatus == "NULL" || newApiStatus.isEmpty()) {
-    LOG_DEBUG(MODULE_VEHICLE, "Relay status is null/empty, keeping current state");
-    return;
-  }
+  // Update physical relay immediately
+  digitalWrite(RELAY_PIN, newRelayState ? RELAY_ON : RELAY_OFF);
+  relayState = newRelayState;
   
-  // Convert API status to boolean
-  bool newRelayState = (newApiStatus == "ON");
+  LOG_INFO(MODULE_COMMAND, "✅ Relay updated immediately: %s", newRelayState ? "ON" : "OFF");
   
-  // Check if this is different from current physical relay state
-  if (newRelayState != relayState) {
-    // IMMEDIATE UPDATE - No consensus needed
-    LOG_INFO(MODULE_VEHICLE, "🔄 API status change detected: %s → %s", 
-             relayState ? "ON" : "OFF", newApiStatus.c_str());
-    
-    String reason = "Immediate API response";
-    updatePhysicalRelay(newRelayState, reason);
-    lastStatusChangeTime = millis();
-    
-    // Switch to real-time mode for immediate verification
-    switchRelayMode(RELAY_MODE_REALTIME);
-    
-    // Update tracking variables
-    lastApiRelayStatus = newApiStatus;
-    relayStatusStable = true;
-    // consecutiveStatusCount = 0; // Removed
-    // pendingRelayStatus = "";    // Removed
-    
-    LOG_INFO(MODULE_VEHICLE, "✅ Relay updated immediately - Physical: %s, API: %s", 
-             relayState ? "ON" : "OFF", newApiStatus.c_str());
+  // Update command status to "executed" 
+  String updatePayload = "{\"status\":\"executed\"}";
+  String updateEndpoint = "/items/commands/" + String(commandId);
+  String updateResponse;
+  
+  bool updated = httpClient.patch(updateEndpoint.c_str(), updatePayload, updateResponse);
+  if (updated) {
+    LOG_INFO(MODULE_COMMAND, "✅ Command ID=%d marked as executed", commandId);
   } else {
-    // Status matches current state
-    if (newApiStatus != lastApiRelayStatus) {
-      LOG_DEBUG(MODULE_VEHICLE, "📡 API status confirmed: %s (matches physical relay)", newApiStatus.c_str());
-      lastApiRelayStatus = newApiStatus;
-    }
-    
-    // Everything is in sync
-    if (currentRelayMode == RELAY_MODE_REALTIME) {
-      LOG_DEBUG(MODULE_VEHICLE, "✅ Relay status verified: %s [REAL-TIME]", newApiStatus.c_str());
-    }
-    
-    relayStatusStable = true;
-    // consecutiveStatusCount = 0; // Removed
-    // pendingRelayStatus = "";    // Removed
+    LOG_WARN(MODULE_COMMAND, "⚠️ Failed to update command status for ID=%d", commandId);
   }
-}
-
-bool updatePhysicalRelay(bool newState, String reason) {
-  LOG_INFO(MODULE_VEHICLE, "🔌 Updating physical relay: %s → %s (%s)", 
-           relayState ? "ON" : "OFF", newState ? "ON" : "OFF", reason.c_str());
-  
-  // Update physical pin
-  digitalWrite(RELAY_PIN, newState ? RELAY_ON : RELAY_OFF);
-  
-  // Update local state
-  relayState = newState;
-  
-  LOG_INFO(MODULE_VEHICLE, "✅ Physical relay updated successfully to: %s", newState ? "ON" : "OFF");
   
   return true;
 }
@@ -416,22 +390,18 @@ void switchRelayMode(RelayMonitoringMode newMode) {
   }
   
   RelayMonitoringMode oldMode = currentRelayMode;
-  unsigned long oldInterval = getCurrentRelayInterval();
-  
   currentRelayMode = newMode;
   relayModeStartTime = millis();
   
-  unsigned long newInterval = getCurrentRelayInterval();
-  
-  LOG_INFO(MODULE_VEHICLE, "🔄 Relay monitoring mode: %s → %s (interval: %lu → %lums)", 
+  LOG_INFO(MODULE_RELAY, "🔄 Relay mode: %s → %s (interval: %lu → %lums)", 
            getRelayModeString(oldMode), getRelayModeString(newMode),
-           oldInterval, newInterval);
+           getCurrentRelayInterval(), getCurrentRelayInterval());
 }
 
 unsigned long getCurrentRelayInterval() {
   switch (currentRelayMode) {
     case RELAY_MODE_REALTIME: return RELAY_CHECK_INTERVAL_REALTIME;
-    case RELAY_MODE_ACTIVE: return RELAY_CHECK_INTERVAL_ACTIVE;
+    case RELAY_MODE_FAST: return RELAY_CHECK_INTERVAL_FAST;
     case RELAY_MODE_NORMAL: 
     default: return RELAY_CHECK_INTERVAL_NORMAL;
   }
@@ -440,7 +410,7 @@ unsigned long getCurrentRelayInterval() {
 const char* getRelayModeString(RelayMonitoringMode mode) {
   switch (mode) {
     case RELAY_MODE_REALTIME: return "REAL-TIME";
-    case RELAY_MODE_ACTIVE: return "ACTIVE";
+    case RELAY_MODE_FAST: return "FAST";
     case RELAY_MODE_NORMAL: return "NORMAL";
     default: return "UNKNOWN";
   }
@@ -581,10 +551,10 @@ void handleOperationalState() {
     }
   }
   
-  // Check if time to check vehicle relay status (using adaptive interval)
-  if (currentTime - lastVehicleCheckTime >= currentRelayInterval) {
+  // Check if time to check relay status (using adaptive interval)
+  if (currentTime - lastRelayCheckTime >= currentRelayInterval) {
     if (checkVehicleRelayStatus()) {
-      lastVehicleCheckTime = currentTime;
+      lastRelayCheckTime = currentTime;
       lastSuccessfulOperation = currentTime;
     }
   }
@@ -738,36 +708,180 @@ bool testServerConnectivity() {
   
   LOG_INFO(MODULE_HTTP, "🔍 Testing server connectivity to %s:%d", SERVER_HOST, SERVER_PORT);
   
-  // Test with the vehicle endpoint
+  // Test with the actual vehicle_datas endpoint instead of root
   String response;
-  bool connected = httpClient.get(VEHICLE_ENDPOINT, response);
+  bool connected = httpClient.get(VEHICLE_DATA_ENDPOINT, response);
   
   if (connected) {
     LOG_INFO(MODULE_HTTP, "✅ Server connectivity test PASSED");
-    LOG_INFO(MODULE_HTTP, "✅ Vehicle endpoint (%s) is accessible", VEHICLE_ENDPOINT);
+    LOG_INFO(MODULE_HTTP, "✅ Vehicle data endpoint (%s) is accessible", VEHICLE_DATA_ENDPOINT);
     LOG_INFO(MODULE_HTTP, "✅ Server %s:%d is ready to receive data", SERVER_HOST, SERVER_PORT);
     LOG_DEBUG(MODULE_HTTP, "Server response length: %d bytes", response.length());
   } else {
     LOG_WARN(MODULE_HTTP, "⚠️ Server connectivity test failed, but will continue");
-    LOG_WARN(MODULE_HTTP, "⚠️ This might be normal if the endpoint requires specific parameters");
-    LOG_INFO(MODULE_HTTP, "📡 Will attempt to check vehicle endpoint anyway");
+    LOG_WARN(MODULE_HTTP, "⚠️ This might be normal if the endpoint requires POST requests");
+    LOG_INFO(MODULE_HTTP, "📡 Will attempt to send vehicle data anyway");
   }
   
   return connected;
 }
 
-// ----- MANUAL RELAY OPERATIONS -----
-bool updateRelayStatusManually(bool state) {
-  LOG_INFO(MODULE_VEHICLE, "🖱️ Manual relay update requested: %s", state ? "ON" : "OFF");
+// ----- RELAY OPERATIONS -----
+
+bool updateRelayStatus(bool state) {
+  if (!modemManager.ensureConnection()) {
+    LOG_ERROR(MODULE_RELAY, "No connection for relay update");
+    return false;
+  }
   
-  // Update physical relay immediately for manual commands
-  updatePhysicalRelay(state, "Manual command");
+  LOG_INFO(MODULE_RELAY, "Manually updating relay to %s", state ? "ON" : "OFF");
   
-  // Switch to real-time mode to verify the change quickly
-  switchRelayMode(RELAY_MODE_REALTIME);
-  lastStatusChangeTime = millis();
+  // Create a new command in the API
+  String commandType = state ? "ENGINE_ON" : "ENGINE_OFF";
   
-  LOG_INFO(MODULE_VEHICLE, "✅ Manual relay update completed, switched to real-time monitoring");
+  // Prepare current timestamp in ISO format
+  char timestamp[30];
+  time_t now;
+  time(&now);
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S.000Z", gmtime(&now));
+  
+  // Construct the payload according to the specified format
+  String payload = "{\"data\":[{";
+  payload += "\"command_id\":1,";
+  payload += "\"gps_id\":\"" + String(GPS_ID) + "\",";
+  payload += "\"command_type\":\"" + commandType + "\",";
+  payload += "\"status\":\"executed\",";
+  payload += "\"date_sent\":\"" + String(timestamp) + "\"";
+  payload += "}]}";
+  
+  LOG_DEBUG(MODULE_RELAY, "Payload: %s", payload.c_str());
+  
+  String response;
+  bool success = Utils::retryOperation(
+    MODULE_RELAY,
+    "Manual relay update",
+    [&]() {
+      return httpClient.post("/items/commands", payload, response);
+    },
+    MAX_HTTP_RETRIES
+  );
+  
+  if (success) {
+    digitalWrite(RELAY_PIN, state ? RELAY_ON : RELAY_OFF);
+    relayState = state;
+    return true;
+  }
+  
+  return false;
+}
+
+// ----- VEHICLE RELAY STATUS CHECK -----
+bool checkVehicleRelayStatus() {
+  if (!modemManager.ensureConnection()) {
+    LOG_ERROR(MODULE_RELAY, "No connection for vehicle relay status check");
+    return false;
+  }
+  
+  LOG_DEBUG(MODULE_RELAY, "Checking vehicle relay status from API... [%s mode]", 
+            getRelayModeString(currentRelayMode));
+  
+  // Use the vehicle endpoint
+  String endpoint = "/items/vehicle";
+  
+  String response;
+  bool success = Utils::retryOperation(
+    MODULE_RELAY,
+    "Vehicle relay status check",
+    [&]() {
+      return httpClient.get(endpoint.c_str(), response);
+    },
+    2  // Reduced retries for faster response in real-time mode
+  );
+  
+  if (!success) {
+    consecutiveRelayFailures++;
+    LOG_ERROR(MODULE_RELAY, "Failed to get vehicle data from API (failures: %d)", 
+              consecutiveRelayFailures);
+    return false;
+  }
+  
+  // Reset failure counter on success
+  consecutiveRelayFailures = 0;
+  
+  // Parse response
+  DynamicJsonDocument doc(2048); // Larger buffer for vehicle data
+  DeserializationError error = deserializeJson(doc, response);
+  
+  if (error) {
+    LOG_ERROR(MODULE_RELAY, "JSON parsing failed: %s", error.c_str());
+    return false;
+  }
+  
+  // Check Directus API response format
+  if (!doc.containsKey("data") || !doc["data"].is<JsonArray>()) {
+    LOG_ERROR(MODULE_RELAY, "Invalid vehicle response format");
+    LOG_DEBUG(MODULE_RELAY, "Response: %s", response.c_str());
+    return false;
+  }
+  
+  JsonArray vehicles = doc["data"].as<JsonArray>();
+  
+  if (vehicles.size() == 0) {
+    LOG_WARN(MODULE_RELAY, "No vehicles found in API response");
+    return false;
+  }
+  
+  // Find vehicle with matching gps_id
+  bool vehicleFound = false;
+  String apiRelayStatus = "";
+  
+  for (JsonObject vehicle : vehicles) {
+    if (vehicle.containsKey("gps_id") &&
+        vehicle["gps_id"].as<String>() == String(GPS_ID)) {
+      vehicleFound = true;
+      
+      if (vehicle.containsKey("relay_status") && !vehicle["relay_status"].isNull()) {
+        apiRelayStatus = vehicle["relay_status"].as<String>();
+      }
+      break;
+    }
+  }
+  
+  if (!vehicleFound) {
+    LOG_WARN(MODULE_RELAY, "GPS ID %s not found in API response", GPS_ID);
+    return false;
+  }
+  
+  if (apiRelayStatus.isEmpty()) {
+    LOG_DEBUG(MODULE_RELAY, "Relay status is null/empty for GPS ID %s", GPS_ID);
+    return true; // Consider this successful but no action needed
+  }
+  
+  if (currentRelayMode == RELAY_MODE_REALTIME) {
+    LOG_INFO(MODULE_RELAY, "🚀 API relay status for GPS ID %s: %s [REAL-TIME CHECK]", 
+             GPS_ID, apiRelayStatus.c_str());
+  } else {
+    LOG_DEBUG(MODULE_RELAY, "API relay status for GPS ID %s: %s", GPS_ID, apiRelayStatus.c_str());
+  }
+  
+  // Compare with current relay state and update if different
+  bool apiRelayOn = (apiRelayStatus == "ON");
+  
+  if (apiRelayOn != relayState) {
+    LOG_INFO(MODULE_RELAY, "🔄 Relay status mismatch! Current: %s, API: %s",
+             relayState ? "ON" : "OFF", apiRelayStatus.c_str());
+    LOG_INFO(MODULE_RELAY, "🔌 Updating relay to match API status: %s", apiRelayStatus.c_str());
+    
+    // Update physical relay
+    digitalWrite(RELAY_PIN, apiRelayOn ? RELAY_ON : RELAY_OFF);
+    relayState = apiRelayOn;
+    
+    LOG_INFO(MODULE_RELAY, "✅ Relay updated successfully to %s", apiRelayOn ? "ON" : "OFF");
+  } else {
+    if (currentRelayMode == RELAY_MODE_REALTIME) {
+      LOG_DEBUG(MODULE_RELAY, "✅ Relay status matches API: %s [REAL-TIME]", apiRelayStatus.c_str());
+    }
+  }
   
   return true;
 }
@@ -783,21 +897,21 @@ void handleSerialCommands() {
     } else if (cmd == "status") {
       printStatus();
     } else if (cmd == "on") {
-      updateRelayStatusManually(true);
+      updateRelayStatus(true);
     } else if (cmd == "off") {
-      updateRelayStatusManually(false);
+      updateRelayStatus(false);
     } else if (cmd == "gps") {
       sendVehicleData();
     } else if (cmd == "test") {
       testServerConnectivity();
     } else if (cmd == "vehicle") {
       checkVehicleRelayStatus();
+    } else if (cmd == "commands") {
+      checkCommandQueue();
     } else if (cmd == "realtime") {
       switchRelayMode(RELAY_MODE_REALTIME);
-      lastStatusChangeTime = millis();
-    } else if (cmd == "active") {
-      switchRelayMode(RELAY_MODE_ACTIVE);
-      lastStatusChangeTime = millis();
+    } else if (cmd == "fast") {
+      switchRelayMode(RELAY_MODE_FAST);
     } else if (cmd == "normal") {
       switchRelayMode(RELAY_MODE_NORMAL);
     } else if (cmd == "movement") {
@@ -812,18 +926,14 @@ void handleSerialCommands() {
                  speedSamples[0], speedSamples[1], speedSamples[2]);
       }
     } else if (cmd == "relay") {
-      LOG_INFO(MODULE_MAIN, "=== VEHICLE ENDPOINT RELAY STATUS ===");
-      LOG_INFO(MODULE_MAIN, "Monitoring Mode: %s", getRelayModeString(currentRelayMode));
-      LOG_INFO(MODULE_MAIN, "Check Interval: %lu ms", getCurrentRelayInterval());
-      LOG_INFO(MODULE_MAIN, "Physical Relay: %s", relayState ? "ON" : "OFF");
-      LOG_INFO(MODULE_MAIN, "Last API Status: %s", lastApiRelayStatus.c_str());
-      // LOG_INFO(MODULE_MAIN, "Pending Status: %s", pendingRelayStatus.c_str()); // Removed
-      // LOG_INFO(MODULE_MAIN, "Consensus Count: %d/%d", consecutiveStatusCount, RELAY_STATUS_CHANGE_THRESHOLD); // Removed
-      LOG_INFO(MODULE_MAIN, "Status Stable: %s", relayStatusStable ? "Yes" : "No");
+      LOG_INFO(MODULE_MAIN, "=== RELAY MONITORING STATUS ===");
+      LOG_INFO(MODULE_MAIN, "Current Mode: %s", getRelayModeString(currentRelayMode));
+      LOG_INFO(MODULE_MAIN, "Current Interval: %lu ms", getCurrentRelayInterval());
+      LOG_INFO(MODULE_MAIN, "Relay State: %s", relayState ? "ON" : "OFF");
+      LOG_INFO(MODULE_MAIN, "Last Command ID: %d", lastProcessedCommandId);
       LOG_INFO(MODULE_MAIN, "Consecutive Failures: %d", consecutiveRelayFailures);
-      unsigned long timeSinceLastChange = millis() - lastStatusChangeTime;
-      LOG_INFO(MODULE_MAIN, "Time Since Last Change: %lu ms", timeSinceLastChange);
-      LOG_INFO(MODULE_MAIN, "Vehicle Endpoint: %s", VEHICLE_ENDPOINT);
+      unsigned long timeSinceLastCommand = millis() - lastCommandDetectedTime;
+      LOG_INFO(MODULE_MAIN, "Time Since Last Command: %lu ms", timeSinceLastCommand);
     } else if (cmd == "data") {
       LOG_INFO(MODULE_MAIN, "=== CURRENT VEHICLE DATA ===");
       char timestamp[30];
@@ -866,6 +976,7 @@ void handleSerialCommands() {
       LOG_INFO(MODULE_MAIN, "Relay: %s", relayState ? "ON" : "OFF");
       LOG_INFO(MODULE_MAIN, "Battery Level: 12.5V");
       LOG_INFO(MODULE_MAIN, "Vehicle Data Endpoint: %s", VEHICLE_DATA_ENDPOINT);
+      LOG_INFO(MODULE_MAIN, "Command Endpoint: %s", COMMAND_ENDPOINT);
       LOG_INFO(MODULE_MAIN, "Vehicle Endpoint: %s", VEHICLE_ENDPOINT);
     } else if (cmd == "reset") {
       ESP.restart();
@@ -908,12 +1019,11 @@ void printStatus() {
            getAverageSpeed(), 
            getCurrentGpsInterval());
   
-  // Vehicle Endpoint Relay Status
-  LOG_INFO(MODULE_MAIN, "Vehicle Relay: %s mode (interval: %lums, API: %s, Physical: %s)", 
+  // Relay Monitoring Status
+  LOG_INFO(MODULE_MAIN, "Relay Mode: %s (interval: %lums, failures: %d)", 
            getRelayModeString(currentRelayMode), 
            getCurrentRelayInterval(),
-           lastApiRelayStatus.c_str(),
-           relayState ? "ON" : "OFF");
+           consecutiveRelayFailures);
   
   // Modem Status
   if (modemManager.isGprsConnected()) {
@@ -923,22 +1033,26 @@ void printStatus() {
   } else {
     LOG_INFO(MODULE_MAIN, "GPRS: Not connected");
   }
+  
+  // Relay Status
+  LOG_INFO(MODULE_MAIN, "Relay: %s", relayState ? "ON" : "OFF");
 }
 
 void printHelp() {
   LOG_INFO(MODULE_MAIN, "=== COMMANDS ===");
-  LOG_INFO(MODULE_MAIN, "help          - Show this help");
-  LOG_INFO(MODULE_MAIN, "status        - Show system status");
-  LOG_INFO(MODULE_MAIN, "movement      - Show movement detection status");
-  LOG_INFO(MODULE_MAIN, "relay         - Show vehicle endpoint relay status");
-  LOG_INFO(MODULE_MAIN, "on/off        - Manual relay control");
-  LOG_INFO(MODULE_MAIN, "gps           - Send vehicle data now");
-  LOG_INFO(MODULE_MAIN, "test          - Test server connectivity");
-  LOG_INFO(MODULE_MAIN, "vehicle       - Check vehicle endpoint now");
-  LOG_INFO(MODULE_MAIN, "realtime      - Switch to real-time mode (1s)");
-  LOG_INFO(MODULE_MAIN, "active        - Switch to active mode (2s)");
-  LOG_INFO(MODULE_MAIN, "normal        - Switch to normal mode (5s)");
-  LOG_INFO(MODULE_MAIN, "data          - Show current vehicle data");
-  LOG_INFO(MODULE_MAIN, "reset         - Restart system");
+  LOG_INFO(MODULE_MAIN, "help         - Show this help");
+  LOG_INFO(MODULE_MAIN, "status       - Show system status");
+  LOG_INFO(MODULE_MAIN, "movement     - Show movement detection status");
+  LOG_INFO(MODULE_MAIN, "relay        - Show relay monitoring status");
+  LOG_INFO(MODULE_MAIN, "on/off       - Control relay");
+  LOG_INFO(MODULE_MAIN, "gps          - Send vehicle data now");
+  LOG_INFO(MODULE_MAIN, "test         - Test server connectivity");
+  LOG_INFO(MODULE_MAIN, "vehicle      - Check vehicle relay status from API");
+  LOG_INFO(MODULE_MAIN, "commands     - Check command queue manually");
+  LOG_INFO(MODULE_MAIN, "realtime     - Switch to real-time relay mode");
+  LOG_INFO(MODULE_MAIN, "fast         - Switch to fast relay mode");
+  LOG_INFO(MODULE_MAIN, "normal       - Switch to normal relay mode");
+  LOG_INFO(MODULE_MAIN, "data         - Show current vehicle data");
+  LOG_INFO(MODULE_MAIN, "reset        - Restart system");
   LOG_INFO(MODULE_MAIN, "loglevel [0-4] - Set log level");
 }

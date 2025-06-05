@@ -2,7 +2,7 @@
  * Integrated ESP32 System with A7670C GSM Module - Vehicle Endpoint Relay Control
  * - Direct relay status checking from /items/vehicle endpoint
  * - Adaptive monitoring: Normal (5s) → Active (2s) → Real-time (1s)
- * - IMMEDIATE relay updates (consensus removed)
+ * - Consensus-based relay updates for reliability
  * - Hybrid GPS intervals based on movement
  */
 
@@ -80,14 +80,11 @@ unsigned long lastRelayModeLogTime = 0;
 int consecutiveRelayFailures = 0;
 unsigned long lastStatusChangeTime = 0;
 
-// Simplified variables - consensus-based variables removed
+// Variables for consensus-based relay updates
 String lastApiRelayStatus = "";
+String pendingRelayStatus = "";
+int consecutiveStatusCount = 0;
 bool relayStatusStable = true;
-
-// REMOVED VARIABLES (no longer needed for immediate updates):
-// String pendingRelayStatus = "";
-// int consecutiveStatusCount = 0;
-
 
 // ----- FUNCTION PROTOTYPES -----
 void handleInitState();
@@ -127,7 +124,7 @@ void setup() {
   Logger::init(&SerialMon, LOG_INFO);
   
   LOG_INFO(MODULE_MAIN, "=== ESP32 System Starting ===");
-  LOG_INFO(MODULE_MAIN, "Version: 2.4 (Vehicle Endpoint Relay Control - Immediate Update)"); // Version updated
+  LOG_INFO(MODULE_MAIN, "Version: 2.3 (Vehicle Endpoint Relay Control)");
   LOG_INFO(MODULE_MAIN, "GPS Intervals: Moving=%dms, Static=%dms", 
            GPS_SEND_INTERVAL_MOVING, GPS_SEND_INTERVAL_STATIC);
   LOG_INFO(MODULE_MAIN, "Relay Intervals: Normal=%dms, Active=%dms, Real-time=%dms", 
@@ -139,10 +136,9 @@ void setup() {
     speedSamples[i] = 0.0;
   }
   
-  // Initialize relay monitoring (in setup() function)
+  // Initialize relay monitoring
   relayModeStartTime = millis();
   lastApiRelayStatus = "UNKNOWN";
-  relayStatusStable = true;  // Simplified initialization
   
   // Initialize watchdog
   Utils::initWatchdog(WATCHDOG_TIMEOUT);
@@ -353,45 +349,100 @@ void processRelayStatusChange(String newApiStatus) {
     return;
   }
   
-  // Convert API status to boolean
-  bool newRelayState = (newApiStatus == "ON");
-  
-  // Check if this is different from current physical relay state
-  if (newRelayState != relayState) {
-    // IMMEDIATE UPDATE - No consensus needed
-    LOG_INFO(MODULE_VEHICLE, "🔄 API status change detected: %s → %s", 
-             relayState ? "ON" : "OFF", newApiStatus.c_str());
-    
-    String reason = "Immediate API response";
-    updatePhysicalRelay(newRelayState, reason);
-    lastStatusChangeTime = millis();
-    
-    // Switch to real-time mode for immediate verification
-    switchRelayMode(RELAY_MODE_REALTIME);
-    
-    // Update tracking variables
+  // Check if this is a new status
+  if (newApiStatus != lastApiRelayStatus) {
+    // Status changed from last check
     lastApiRelayStatus = newApiStatus;
-    relayStatusStable = true;
-    // consecutiveStatusCount = 0; // Removed
-    // pendingRelayStatus = "";    // Removed
     
-    LOG_INFO(MODULE_VEHICLE, "✅ Relay updated immediately - Physical: %s, API: %s", 
-             relayState ? "ON" : "OFF", newApiStatus.c_str());
+    if (newApiStatus != pendingRelayStatus) {
+      // This is a completely new status
+      pendingRelayStatus = newApiStatus;
+      consecutiveStatusCount = 1;
+      relayStatusStable = false;
+      
+      LOG_INFO(MODULE_VEHICLE, "🔄 New relay status detected: %s (consensus: 1/%d)", 
+               newApiStatus.c_str(), RELAY_STATUS_CHANGE_THRESHOLD);
+      
+      // Switch to active mode for more frequent checking
+      if (currentRelayMode == RELAY_MODE_NORMAL) {
+        switchRelayMode(RELAY_MODE_ACTIVE);
+      }
+    } else {
+      // Same pending status, increment counter
+      consecutiveStatusCount++;
+      
+      LOG_INFO(MODULE_VEHICLE, "🔄 Confirming relay status: %s (consensus: %d/%d)", 
+               newApiStatus.c_str(), consecutiveStatusCount, RELAY_STATUS_CHANGE_THRESHOLD);
+      
+      // Check if we have enough consensus to make the change
+      if (consecutiveStatusCount >= RELAY_STATUS_CHANGE_THRESHOLD) {
+        // We have consensus, update the physical relay
+        bool newRelayState = (newApiStatus == "ON");
+        
+        if (newRelayState != relayState) {
+          String reason = "API consensus (" + String(consecutiveStatusCount) + " checks)";
+          updatePhysicalRelay(newRelayState, reason);
+          lastStatusChangeTime = millis();
+          
+          // Switch to real-time mode for immediate verification
+          switchRelayMode(RELAY_MODE_REALTIME);
+        }
+        
+        relayStatusStable = true;
+        consecutiveStatusCount = 0;
+        pendingRelayStatus = "";
+      }
+    }
   } else {
-    // Status matches current state
-    if (newApiStatus != lastApiRelayStatus) {
-      LOG_DEBUG(MODULE_VEHICLE, "📡 API status confirmed: %s (matches physical relay)", newApiStatus.c_str());
-      lastApiRelayStatus = newApiStatus;
+    // Same status as last check
+    if (!relayStatusStable && newApiStatus == pendingRelayStatus) {
+      // Still confirming the same pending status
+      consecutiveStatusCount++;
+      
+      LOG_DEBUG(MODULE_VEHICLE, "📡 Confirming relay status: %s (consensus: %d/%d)", 
+                newApiStatus.c_str(), consecutiveStatusCount, RELAY_STATUS_CHANGE_THRESHOLD);
+      
+      if (consecutiveStatusCount >= RELAY_STATUS_CHANGE_THRESHOLD) {
+        // We have consensus
+        bool newRelayState = (newApiStatus == "ON");
+        
+        if (newRelayState != relayState) {
+          String reason = "API consensus (" + String(consecutiveStatusCount) + " checks)";
+          updatePhysicalRelay(newRelayState, reason);
+          lastStatusChangeTime = millis();
+          
+          // Switch to real-time mode for verification
+          switchRelayMode(RELAY_MODE_REALTIME);
+        }
+        
+        relayStatusStable = true;
+        consecutiveStatusCount = 0;
+        pendingRelayStatus = "";
+      }
+    } else if (relayStatusStable) {
+      // Status is stable, just verify current state matches
+      bool apiRelayState = (newApiStatus == "ON");
+      if (apiRelayState != relayState) {
+        // Unexpected mismatch - this should be rare with consensus checking
+        LOG_WARN(MODULE_VEHICLE, "⚠️ Unexpected relay mismatch: Physical=%s, API=%s", 
+                 relayState ? "ON" : "OFF", newApiStatus.c_str());
+        
+        // Start a new consensus check
+        pendingRelayStatus = newApiStatus;
+        consecutiveStatusCount = 1;
+        relayStatusStable = false;
+        
+        // Switch to active mode for faster verification
+        if (currentRelayMode == RELAY_MODE_NORMAL) {
+          switchRelayMode(RELAY_MODE_ACTIVE);
+        }
+      } else {
+        // Everything is in sync
+        if (currentRelayMode == RELAY_MODE_REALTIME) {
+          LOG_DEBUG(MODULE_VEHICLE, "✅ Relay status verified: %s [REAL-TIME]", newApiStatus.c_str());
+        }
+      }
     }
-    
-    // Everything is in sync
-    if (currentRelayMode == RELAY_MODE_REALTIME) {
-      LOG_DEBUG(MODULE_VEHICLE, "✅ Relay status verified: %s [REAL-TIME]", newApiStatus.c_str());
-    }
-    
-    relayStatusStable = true;
-    // consecutiveStatusCount = 0; // Removed
-    // pendingRelayStatus = "";    // Removed
   }
 }
 
@@ -817,8 +868,8 @@ void handleSerialCommands() {
       LOG_INFO(MODULE_MAIN, "Check Interval: %lu ms", getCurrentRelayInterval());
       LOG_INFO(MODULE_MAIN, "Physical Relay: %s", relayState ? "ON" : "OFF");
       LOG_INFO(MODULE_MAIN, "Last API Status: %s", lastApiRelayStatus.c_str());
-      // LOG_INFO(MODULE_MAIN, "Pending Status: %s", pendingRelayStatus.c_str()); // Removed
-      // LOG_INFO(MODULE_MAIN, "Consensus Count: %d/%d", consecutiveStatusCount, RELAY_STATUS_CHANGE_THRESHOLD); // Removed
+      LOG_INFO(MODULE_MAIN, "Pending Status: %s", pendingRelayStatus.c_str());
+      LOG_INFO(MODULE_MAIN, "Consensus Count: %d/%d", consecutiveStatusCount, RELAY_STATUS_CHANGE_THRESHOLD);
       LOG_INFO(MODULE_MAIN, "Status Stable: %s", relayStatusStable ? "Yes" : "No");
       LOG_INFO(MODULE_MAIN, "Consecutive Failures: %d", consecutiveRelayFailures);
       unsigned long timeSinceLastChange = millis() - lastStatusChangeTime;
@@ -927,18 +978,18 @@ void printStatus() {
 
 void printHelp() {
   LOG_INFO(MODULE_MAIN, "=== COMMANDS ===");
-  LOG_INFO(MODULE_MAIN, "help          - Show this help");
-  LOG_INFO(MODULE_MAIN, "status        - Show system status");
-  LOG_INFO(MODULE_MAIN, "movement      - Show movement detection status");
-  LOG_INFO(MODULE_MAIN, "relay         - Show vehicle endpoint relay status");
-  LOG_INFO(MODULE_MAIN, "on/off        - Manual relay control");
-  LOG_INFO(MODULE_MAIN, "gps           - Send vehicle data now");
-  LOG_INFO(MODULE_MAIN, "test          - Test server connectivity");
-  LOG_INFO(MODULE_MAIN, "vehicle       - Check vehicle endpoint now");
-  LOG_INFO(MODULE_MAIN, "realtime      - Switch to real-time mode (1s)");
-  LOG_INFO(MODULE_MAIN, "active        - Switch to active mode (2s)");
-  LOG_INFO(MODULE_MAIN, "normal        - Switch to normal mode (5s)");
-  LOG_INFO(MODULE_MAIN, "data          - Show current vehicle data");
-  LOG_INFO(MODULE_MAIN, "reset         - Restart system");
+  LOG_INFO(MODULE_MAIN, "help         - Show this help");
+  LOG_INFO(MODULE_MAIN, "status       - Show system status");
+  LOG_INFO(MODULE_MAIN, "movement     - Show movement detection status");
+  LOG_INFO(MODULE_MAIN, "relay        - Show vehicle endpoint relay status");
+  LOG_INFO(MODULE_MAIN, "on/off       - Manual relay control");
+  LOG_INFO(MODULE_MAIN, "gps          - Send vehicle data now");
+  LOG_INFO(MODULE_MAIN, "test         - Test server connectivity");
+  LOG_INFO(MODULE_MAIN, "vehicle      - Check vehicle endpoint now");
+  LOG_INFO(MODULE_MAIN, "realtime     - Switch to real-time mode (1s)");
+  LOG_INFO(MODULE_MAIN, "active       - Switch to active mode (2s)");
+  LOG_INFO(MODULE_MAIN, "normal       - Switch to normal mode (5s)");
+  LOG_INFO(MODULE_MAIN, "data         - Show current vehicle data");
+  LOG_INFO(MODULE_MAIN, "reset        - Restart system");
   LOG_INFO(MODULE_MAIN, "loglevel [0-4] - Set log level");
 }

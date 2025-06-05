@@ -28,6 +28,7 @@
 #define REALTIME_MODE_DURATION 30000         // 30 detik real-time mode untuk test
 
 #define MAX_CONSECUTIVE_RELAY_FAILURES 3     // Max failures before fallback to normal mode
+#define RELAY_STATUS_CHANGE_THRESHOLD 3      // Perlu 3 consecutive checks untuk konfirmasi perubahan
 
 // ----- TIME CONSTANTS (ms) -----
 #define HTTP_TIMEOUT 15000              // HTTP request timeout

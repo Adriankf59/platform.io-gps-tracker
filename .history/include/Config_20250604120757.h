@@ -1,4 +1,4 @@
-// Config.h - Modified for Vehicle Endpoint Focus
+// Config.h - Modified for Hybrid Interval
 
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -19,17 +19,8 @@
 #define MOVEMENT_SPEED_THRESHOLD 5.0        // km/h - threshold untuk menentukan bergerak/diam
 #define MOVEMENT_DETECTION_SAMPLES 3        // Jumlah sample untuk stabilitas deteksi
 
-// ----- VEHICLE ENDPOINT RELAY MONITORING -----
-#define RELAY_CHECK_INTERVAL_NORMAL 5000     // 5 detik saat normal (lebih sering dari sebelumnya)
-#define RELAY_CHECK_INTERVAL_ACTIVE 2000     // 2 detik saat ada perubahan detected
-#define RELAY_CHECK_INTERVAL_REALTIME 1000   // 1 detik saat mode real-time
-
-#define ACTIVE_MODE_DURATION 60000           // 60 detik active mode setelah perubahan
-#define REALTIME_MODE_DURATION 30000         // 30 detik real-time mode untuk test
-
-#define MAX_CONSECUTIVE_RELAY_FAILURES 3     // Max failures before fallback to normal mode
-
 // ----- TIME CONSTANTS (ms) -----
+#define RELAY_CHECK_INTERVAL 10000      // Check relay status every 10 seconds
 #define HTTP_TIMEOUT 15000              // HTTP request timeout
 #define MAX_STATE_TIME 15000            // Maximum time in a state
 #define SYSTEM_STUCK_TIMEOUT 300000     // System stuck timeout (5 minutes)
@@ -41,7 +32,6 @@
 #define SERVER_PORT 8055
 #define GPS_ENDPOINT "/items/vehicle_datas"
 #define VEHICLE_DATA_ENDPOINT "/items/vehicle_datas"
-#define VEHICLE_ENDPOINT "/items/vehicle"
 #define DEVICE_ID 1
 #define RELAY_ID 1
 #define APN ""              // APN automatic detection
@@ -65,7 +55,6 @@
 #define MODULE_GPS "GPS"
 #define MODULE_MODEM "MODEM"
 #define MODULE_RELAY "RELAY"
-#define MODULE_VEHICLE "VEHICLE"
 #define MODULE_HTTP "HTTP"
 #define MODULE_SYS "SYSTEM"
 
