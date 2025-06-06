@@ -46,16 +46,19 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
   
   Utils::feedWatchdog();
   
-  // Start request
+  // Start request and capture the return code from the HTTP library.
+  // The previous implementation ignored the value returned by the
+  // request methods which meant connection failures were never
+  // reported correctly and `err` always stayed at 0.
   int err = 0;
-  
+
   if (strcmp(method, "GET") == 0) {
     http->beginRequest();
-    http->get(fullPath);
+    err = http->get(fullPath);
     http->endRequest();
   } else if (strcmp(method, "POST") == 0 && payload) {
     http->beginRequest();
-    http->post(fullPath);
+    err = http->post(fullPath);
     http->sendHeader("Content-Type", "application/json");
     http->sendHeader("Content-Length", String(payload->length()));
     http->beginBody();
@@ -63,7 +66,7 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
     http->endRequest();
   } else if (strcmp(method, "PATCH") == 0 && payload) {
     http->beginRequest();
-    http->patch(fullPath);
+    err = http->patch(fullPath);
     http->sendHeader("Content-Type", "application/json");
     http->sendHeader("Content-Length", String(payload->length()));
     http->beginBody();
