@@ -80,6 +80,9 @@ unsigned long lastRelayModeLogTime = 0;
 int consecutiveRelayFailures = 0;
 unsigned long lastStatusChangeTime = 0;
 
+// Track consecutive connection failures to trigger recovery sooner
+int consecutiveConnectionFailures = 0;
+
 // Simplified variables - consensus-based variables removed
 String lastApiRelayStatus = "";
 bool relayStatusStable = true;
@@ -266,8 +269,17 @@ void updateRelayMonitoring() {
 bool checkVehicleRelayStatus() {
   if (!modemManager.ensureConnection()) {
     consecutiveRelayFailures++;
-    LOG_DEBUG(MODULE_VEHICLE, "No connection for vehicle relay status check (failures: %d)", 
+    consecutiveConnectionFailures++;
+    LOG_DEBUG(MODULE_VEHICLE, "No connection for vehicle relay status check (failures: %d)",
               consecutiveRelayFailures);
+    if (consecutiveConnectionFailures >= MAX_CONNECTION_FAILURES) {
+      LOG_ERROR(MODULE_SYS,
+                "Exceeded maximum connection failures, triggering recovery");
+      consecutiveConnectionFailures = 0;
+      if (currentState == STATE_OPERATIONAL) {
+        currentState = STATE_CONNECTION_RECOVERY;
+      }
+    }
     return false;
   }
   
@@ -276,16 +288,26 @@ bool checkVehicleRelayStatus() {
   
   String response;
   bool success = httpClient.get(VEHICLE_ENDPOINT, response);
-  
+
   if (!success) {
     consecutiveRelayFailures++;
-    LOG_ERROR(MODULE_VEHICLE, "❌ Failed to get vehicle data from API (failures: %d)", 
+    consecutiveConnectionFailures++;
+    LOG_ERROR(MODULE_VEHICLE, "❌ Failed to get vehicle data from API (failures: %d)",
               consecutiveRelayFailures);
+    if (consecutiveConnectionFailures >= MAX_CONNECTION_FAILURES) {
+      LOG_ERROR(MODULE_SYS,
+                "Exceeded maximum connection failures, triggering recovery");
+      consecutiveConnectionFailures = 0;
+      if (currentState == STATE_OPERATIONAL) {
+        currentState = STATE_CONNECTION_RECOVERY;
+      }
+    }
     return false;
   }
-  
+
   // Reset failure counter on successful HTTP request
   consecutiveRelayFailures = 0;
+  consecutiveConnectionFailures = 0;
   
   // Parse response
   DynamicJsonDocument doc(2048);
@@ -721,11 +743,22 @@ bool sendVehicleData() {
     },
     MAX_HTTP_RETRIES
   );
-  
+
   if (!success) {
     LOG_ERROR(MODULE_GPS, "Failed to send vehicle data after retries");
+    consecutiveConnectionFailures++;
+    if (consecutiveConnectionFailures >= MAX_CONNECTION_FAILURES) {
+      LOG_ERROR(MODULE_SYS,
+                "Exceeded maximum connection failures, triggering recovery");
+      consecutiveConnectionFailures = 0;
+      if (currentState == STATE_OPERATIONAL) {
+        currentState = STATE_CONNECTION_RECOVERY;
+      }
+    }
+  } else {
+    consecutiveConnectionFailures = 0;
   }
-  
+
   return success;
 }
 
