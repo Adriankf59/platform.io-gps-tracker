@@ -14,6 +14,7 @@
 #define SerialAT Serial1
 
 // ----- INCLUDES -----
+
 #if __has_include(<TinyGsmClientSecure.h>)
 #  include <TinyGsmClientSecure.h>
 using NetworkClient = TinyGsmClientSecure;
@@ -21,6 +22,7 @@ using NetworkClient = TinyGsmClientSecure;
 #  include <TinyGsmClient.h>
 using NetworkClient = TinyGsmClient;
 #endif
+
 #include <TinyGPSPlus.h>
 #include <ArduinoJson.h>
 
