@@ -14,7 +14,13 @@
 #define SerialAT Serial1
 
 // ----- INCLUDES -----
-#include <TinyGsmClient.h>
+#if __has_include(<TinyGsmClientSecure.h>)
+#  include <TinyGsmClientSecure.h>
+using NetworkClient = TinyGsmClientSecure;
+#else
+#  include <TinyGsmClient.h>
+using NetworkClient = TinyGsmClient;
+#endif
 #include <TinyGPSPlus.h>
 #include <ArduinoJson.h>
 
@@ -54,7 +60,7 @@ enum RelayMonitoringMode {
 TinyGPSPlus gps;
 HardwareSerial SerialGPS(2);
 TinyGsm modem(SerialAT);
-TinyGsmClient gsmClient(modem);
+NetworkClient gsmClient(modem);
 GpsManager gpsManager(gps, SerialGPS);
 ModemManager modemManager(modem, SerialAT);
 HttpClientWrapper httpClient(gsmClient);

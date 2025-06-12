@@ -2,8 +2,8 @@
 
 #include "HttpClient.h"
 
-HttpClientWrapper::HttpClientWrapper(TinyGsmClient& gsmClient) 
-  : client(gsmClient), http(nullptr) {
+HttpClientWrapper::HttpClientWrapper(Client& netClient)
+  : client(netClient), http(nullptr) {
 }
 
 HttpClientWrapper::~HttpClientWrapper() {
@@ -32,7 +32,7 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
     fullPath = "/" + fullPath;
   }
 
-  LOG_INFO(MODULE_HTTP, "→ %s %s://%s:%d%s", method, "http", SERVER_HOST, SERVER_PORT, fullPath.c_str());
+  LOG_INFO(MODULE_HTTP, "→ %s %s://%s:%d%s", method, "https", SERVER_HOST, SERVER_PORT, fullPath.c_str());
   if (payload && payload->length() > 0) {
     LOG_DEBUG(MODULE_HTTP, "Request payload size: %d bytes", payload->length());
   }
@@ -120,7 +120,7 @@ void HttpClientWrapper::logHttpError(int error, const char* operation) {
 
 bool HttpClientWrapper::testConnection() {
   LOG_INFO(MODULE_HTTP, "🔍 Testing server connectivity...");
-  LOG_INFO(MODULE_HTTP, "Target: %s://%s:%d", "http", SERVER_HOST, SERVER_PORT);
+  LOG_INFO(MODULE_HTTP, "Target: %s://%s:%d", "https", SERVER_HOST, SERVER_PORT);
   
   String response;
   bool result = get("/", response);
