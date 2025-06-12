@@ -91,9 +91,14 @@ bool HttpClientWrapper::performRequest(const char* method, const char* path,
            statusCode,
            (statusCode >= 200 && statusCode < 300) ? "SUCCESS" : "ERROR",
            response.length());
-  
-  if (response.length() > 0 && response.length() < 200) {
-    LOG_DEBUG(MODULE_HTTP, "Response body: %s", response.c_str());
+
+  if (response.length() > 0) {
+    if (response.length() <= 200) {
+      LOG_DEBUG(MODULE_HTTP, "Response body: %s", response.c_str());
+    } else {
+      String truncated = response.substring(0, 200);
+      LOG_DEBUG(MODULE_HTTP, "Response body (truncated): %s", truncated.c_str());
+    }
   }
   
   // Close connection
