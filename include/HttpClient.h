@@ -5,18 +5,18 @@
 
 #include <Arduino.h>
 #include <ArduinoHttpClient.h>
-#include <TinyGsmClient.h>
+#include <Client.h>
 #include "Config.h"
 #include "Logger.h"
 #include "Utils.h"
 
 class HttpClientWrapper {
 private:
-  TinyGsmClient& client;
+  Client& client;
   HttpClient* http;
   
 public:
-  HttpClientWrapper(TinyGsmClient& gsmClient);
+  HttpClientWrapper(Client& netClient);
   ~HttpClientWrapper();
   
   // HTTP operations

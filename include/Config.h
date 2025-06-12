@@ -37,11 +37,11 @@
 #define WATCHDOG_TIMEOUT 120000         // Watchdog timeout (2 minutes)
 
 // ----- SERVER CONFIGURATION -----
-#define SERVER_HOST "ec2-13-229-83-7.ap-southeast-1.compute.amazonaws.com"
-#define SERVER_PORT 8055
-#define GPS_ENDPOINT "/items/vehicle_datas"
-#define VEHICLE_DATA_ENDPOINT "/items/vehicle_datas"
-#define VEHICLE_ENDPOINT "/items/vehicle"
+#define SERVER_HOST "vehitrack.my.id"
+#define SERVER_PORT 443
+#define GPS_ENDPOINT "/directus/items/vehicle_datas"
+#define VEHICLE_DATA_ENDPOINT "/directus/items/vehicle_datas"
+#define VEHICLE_ENDPOINT "/directus/items/vehicle"
 #define DEVICE_ID 1
 #define RELAY_ID 1
 #define APN ""              // APN automatic detection
@@ -70,7 +70,7 @@
 #define MODULE_SYS "SYSTEM"
 
 // Add new
-#define API_BASE_URL "http://ec2-13-229-83-7.ap-southeast-1.compute.amazonaws.com:8055"
+#define API_BASE_URL "https://vehitrack.my.id/directus"
 #define GPS_ID "2d7a9833-872f-4523-b0e4-c36734940a6f"
 
 #endif // CONFIG_H
