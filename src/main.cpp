@@ -15,6 +15,7 @@
 
 // ----- INCLUDES -----
 #include <TinyGsmClient.h>
+#include <TinyGsmClientSecure.h>
 #include <TinyGPSPlus.h>
 #include <ArduinoJson.h>
 
@@ -54,7 +55,7 @@ enum RelayMonitoringMode {
 TinyGPSPlus gps;
 HardwareSerial SerialGPS(2);
 TinyGsm modem(SerialAT);
-TinyGsmClient gsmClient(modem);
+TinyGsmClientSecure gsmClient(modem);
 GpsManager gpsManager(gps, SerialGPS);
 ModemManager modemManager(modem, SerialAT);
 HttpClientWrapper httpClient(gsmClient);
