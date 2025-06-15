@@ -288,8 +288,8 @@ bool checkVehicleRelayStatus() {
             getRelayModeString(currentRelayMode));
   
   String response;
-  // Use httpClient.get with path only (HttpClientWrapper expects only path)
-  bool success = httpClient.get(VEHICLE_ENDPOINT, response);
+  // Use httpClient.get with hostname and path separately (no port in URL)
+  bool success = httpClient.get(SERVER_HOST, VEHICLE_ENDPOINT, response);
 
   if (!success) {
     consecutiveRelayFailures++;
@@ -722,7 +722,7 @@ bool sendVehicleData() {
     "Vehicle data sending",
     [&]() {
       String response;
-      bool result = httpClient.post(VEHICLE_DATA_ENDPOINT, payload, response);
+      bool result = httpClient.post(SERVER_HOST, VEHICLE_DATA_ENDPOINT, payload, response);
       if (result) {
         LOG_INFO(MODULE_GPS, "✅ Vehicle data sent successfully to server");
         LOG_INFO(MODULE_GPS, "📊 Data sent: gps_id=%s, timestamp=%s", GPS_ID, isoTimestamp.c_str());
@@ -773,9 +773,9 @@ bool testServerConnectivity() {
   
   LOG_INFO(MODULE_HTTP, "🔍 Testing server connectivity to %s", SERVER_HOST);
   
-  // Test with the vehicle endpoint - Use path only (HttpClientWrapper expects only path)
+  // Test with the vehicle endpoint - Use hostname and path separately (no port in URL)
   String response;
-  bool connected = httpClient.get(VEHICLE_ENDPOINT, response);
+  bool connected = httpClient.get(SERVER_HOST, VEHICLE_ENDPOINT, response);
   
   if (connected) {
     LOG_INFO(MODULE_HTTP, "✅ Server connectivity test PASSED");

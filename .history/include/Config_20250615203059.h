@@ -14,10 +14,10 @@
 #define RELAY_OFF HIGH       // Adjust for relay type
 
 // ----- HYBRID GPS INTERVAL CONFIGURATION -----
-#define GPS_SEND_INTERVAL_MOVING 1000       // 1 detik saat bergerak (lebih real-time)
+#define GPS_SEND_INTERVAL_MOVING 3000       // 3 detik saat bergerak
 #define GPS_SEND_INTERVAL_STATIC 10000      // 10 detik saat diam
-#define MOVEMENT_SPEED_THRESHOLD 3.0        // km/h - threshold untuk menentukan bergerak/diam
-#define MOVEMENT_DETECTION_SAMPLES 2        // Jumlah sample untuk stabilitas deteksi
+#define MOVEMENT_SPEED_THRESHOLD 5.0        // km/h - threshold untuk menentukan bergerak/diam
+#define MOVEMENT_DETECTION_SAMPLES 3        // Jumlah sample untuk stabilitas deteksi
 
 // ----- VEHICLE ENDPOINT RELAY MONITORING -----
 #define RELAY_CHECK_INTERVAL_NORMAL 5000     // 5 detik saat normal (lebih sering dari sebelumnya)
@@ -38,11 +38,10 @@
 
 // ----- SERVER CONFIGURATION -----
 #define SERVER_HOST "vehitrack.my.id"
-// Remove SERVER_PORT completely or set to 0 to avoid port in URL
-// #define SERVER_PORT 80                 // Comment out or remove this line
-#define GPS_ENDPOINT "/directus/items/vehicle_datas"
-#define VEHICLE_DATA_ENDPOINT "/directus/items/vehicle_datas"
-#define VEHICLE_ENDPOINT "/directus/items/vehicle"
+#define SERVER_PORT 80                 // HTTP standard port
+#define GPS_ENDPOINT "http://vehitrack.my.id/directus/items/vehicle_datas"
+#define VEHICLE_DATA_ENDPOINT "http://vehitrack.my.id/directus/items/vehicle_datas"
+#define VEHICLE_ENDPOINT "http://vehitrack.my.id/directus/items/vehicle"
 #define DEVICE_ID 1
 #define RELAY_ID 1
 #define APN ""              // APN automatic detection

@@ -17,7 +17,7 @@
 #define GPS_SEND_INTERVAL_MOVING 1000       // 1 detik saat bergerak (lebih real-time)
 #define GPS_SEND_INTERVAL_STATIC 10000      // 10 detik saat diam
 #define MOVEMENT_SPEED_THRESHOLD 3.0        // km/h - threshold untuk menentukan bergerak/diam
-#define MOVEMENT_DETECTION_SAMPLES 2        // Jumlah sample untuk stabilitas deteksi
+#define MOVEMENT_DETECTION_SAMPLES 3        // Jumlah sample untuk stabilitas deteksi
 
 // ----- VEHICLE ENDPOINT RELAY MONITORING -----
 #define RELAY_CHECK_INTERVAL_NORMAL 5000     // 5 detik saat normal (lebih sering dari sebelumnya)

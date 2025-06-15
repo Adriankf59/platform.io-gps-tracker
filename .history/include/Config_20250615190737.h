@@ -1,4 +1,4 @@
-// Config.h - Modified for Vehicle Endpoint Focus (HTTP) - No Port in Endpoints
+// Config.h - Modified for Vehicle Endpoint Focus (HTTP)
 
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -14,10 +14,10 @@
 #define RELAY_OFF HIGH       // Adjust for relay type
 
 // ----- HYBRID GPS INTERVAL CONFIGURATION -----
-#define GPS_SEND_INTERVAL_MOVING 1000       // 1 detik saat bergerak (lebih real-time)
+#define GPS_SEND_INTERVAL_MOVING 3000       // 3 detik saat bergerak
 #define GPS_SEND_INTERVAL_STATIC 10000      // 10 detik saat diam
-#define MOVEMENT_SPEED_THRESHOLD 3.0        // km/h - threshold untuk menentukan bergerak/diam
-#define MOVEMENT_DETECTION_SAMPLES 2        // Jumlah sample untuk stabilitas deteksi
+#define MOVEMENT_SPEED_THRESHOLD 5.0        // km/h - threshold untuk menentukan bergerak/diam
+#define MOVEMENT_DETECTION_SAMPLES 3        // Jumlah sample untuk stabilitas deteksi
 
 // ----- VEHICLE ENDPOINT RELAY MONITORING -----
 #define RELAY_CHECK_INTERVAL_NORMAL 5000     // 5 detik saat normal (lebih sering dari sebelumnya)
@@ -38,8 +38,7 @@
 
 // ----- SERVER CONFIGURATION -----
 #define SERVER_HOST "vehitrack.my.id"
-// Remove SERVER_PORT completely or set to 0 to avoid port in URL
-// #define SERVER_PORT 80                 // Comment out or remove this line
+#define SERVER_PORT 80                 // Changed to 80 for HTTP
 #define GPS_ENDPOINT "/directus/items/vehicle_datas"
 #define VEHICLE_DATA_ENDPOINT "/directus/items/vehicle_datas"
 #define VEHICLE_ENDPOINT "/directus/items/vehicle"
@@ -68,10 +67,10 @@
 #define MODULE_RELAY "RELAY"
 #define MODULE_VEHICLE "VEHICLE"
 #define MODULE_HTTP "HTTP"
-#define MODULE_SYS "SYS"
+#define MODULE_SYS "SYSTEM"
 
-// ----- API CONFIGURATION -----
-#define API_BASE_URL "http://vehitrack.my.id/directus"
+// Add new
+#define API_BASE_URL "http://vehitrack.my.id/directus" // Updated to HTTP
 #define GPS_ID "2d7a9833-872f-4523-b0e4-c36734940a6f"
 
 #endif // CONFIG_H
