@@ -109,7 +109,7 @@
 #define APN ""               // Kosongkan untuk auto-detect APN
 
 // WebSocket Configuration (Optimized for testing realtime)
-#define WS_URL "ws://vehitrack.my.id/websocket"  // URL server WebSocket
+#define WS_URL "ws://70.153.193.19/websocket"  // URL server WebSocket
 #define WS_PING_INTERVAL 20000                   // 20 seconds keepalive
 #define WS_RECONNECT_DELAY 1000                  // 1 second for faster recovery
 #define WS_CONNECT_TIMEOUT 5000                  // Connection timeout (5 detik)
