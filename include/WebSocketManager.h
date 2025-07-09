@@ -1,4 +1,4 @@
-// WebSocketManager.h - Manajer WebSocket untuk Real-time Communication (Optimized for Low Latency)
+// WebSocketManager.h - Updated for Database Compliance and Latency Calculation
 #ifndef WEBSOCKET_MANAGER_H
 #define WEBSOCKET_MANAGER_H
 
@@ -8,8 +8,11 @@
 #include "Config.h"
 #include "Logger.h"
 
+// Forward declaration
+class Utils;
+
 // WebSocket buffer size constant (optimized)
-#define WS_MAX_MESSAGE_SIZE 2048  // Reduced from 4096 for faster processing
+#define WS_MAX_MESSAGE_SIZE 2048
 
 // State WebSocket
 enum WSState {
@@ -19,7 +22,50 @@ enum WSState {
   WS_SUBSCRIBED      // Terhubung dan sudah subscribe
 };
 
-// Statistik koneksi dengan performance metrics
+// Latency Tracking Structure (ENHANCED)
+struct LatencyMeasurement {
+  unsigned long transmissionStart;    // When transmission started
+  unsigned long databaseReceived;     // When database confirmation received
+  unsigned long endToEndLatency;     // Total latency (transmission to DB storage)
+  bool measuring;                     // Currently measuring
+  bool completed;                     // Measurement completed
+  String transmissionId;              // Unique ID for tracking
+  
+  void reset() {
+    transmissionStart = 0;
+    databaseReceived = 0;
+    endToEndLatency = 0;
+    measuring = false;
+    completed = false;
+    transmissionId = "";
+  }
+  
+  void start(const String& id) {
+    transmissionStart = millis();
+    transmissionId = id;
+    measuring = true;
+    completed = false;
+    databaseReceived = 0;
+    endToEndLatency = 0;
+  }
+  
+  bool finish() {
+    if (measuring && transmissionStart > 0) {
+      databaseReceived = millis();
+      endToEndLatency = databaseReceived - transmissionStart;
+      measuring = false;
+      completed = true;
+      return true;
+    }
+    return false;
+  }
+  
+  bool isValid() const {
+    return completed && endToEndLatency > 0 && endToEndLatency < LATENCY_TIMEOUT;
+  }
+};
+
+// Statistik koneksi dengan enhanced latency tracking
 struct WSStats {
   unsigned long totalMessages;
   unsigned long totalBytesSent;
@@ -28,29 +74,42 @@ struct WSStats {
   unsigned long lastMessageTime;
   int reconnectCount;
   
-  // Performance metrics
+  // Enhanced latency metrics
   unsigned long totalLatency;
   unsigned long minLatency;
   unsigned long maxLatency;
   unsigned long latencySamples;
-  unsigned long lastTransmissionStart;
+  unsigned long lastTransmissionStart;     // Added back for compatibility
+  unsigned long endToEndLatency;           // NEW: Database storage latency
+  unsigned long totalEndToEndLatency;      // NEW: Total end-to-end latency
+  unsigned long minEndToEndLatency;        // NEW: Min database latency
+  unsigned long maxEndToEndLatency;        // NEW: Max database latency
+  unsigned long endToEndSamples;           // NEW: Number of end-to-end samples
   bool measuringLatency;
 };
 
 // Performance tracking
 struct LatencyTracker {
   unsigned long samples[LATENCY_SAMPLE_SIZE];
+  unsigned long endToEndSamples[LATENCY_SAMPLE_SIZE];  // NEW: End-to-end latency samples
   int currentIndex;
+  int endToEndIndex;  // NEW: Index for end-to-end samples
   int sampleCount;
+  int endToEndCount;  // NEW: Count of end-to-end samples
   unsigned long totalLatency;
+  unsigned long totalEndToEndLatency;  // NEW: Total end-to-end latency
   bool initialized;
   
   void addSample(unsigned long latency) {
     if (!initialized) {
       memset(samples, 0, sizeof(samples));
+      memset(endToEndSamples, 0, sizeof(endToEndSamples));
       currentIndex = 0;
+      endToEndIndex = 0;
       sampleCount = 0;
+      endToEndCount = 0;
       totalLatency = 0;
+      totalEndToEndLatency = 0;
       initialized = true;
     }
     
@@ -67,8 +126,38 @@ struct LatencyTracker {
     currentIndex = (currentIndex + 1) % LATENCY_SAMPLE_SIZE;
   }
   
+  void addEndToEndSample(unsigned long latency) {  // NEW: Add end-to-end sample
+    if (!initialized) {
+      memset(samples, 0, sizeof(samples));
+      memset(endToEndSamples, 0, sizeof(endToEndSamples));
+      currentIndex = 0;
+      endToEndIndex = 0;
+      sampleCount = 0;
+      endToEndCount = 0;
+      totalLatency = 0;
+      totalEndToEndLatency = 0;
+      initialized = true;
+    }
+    
+    // Remove old sample if buffer is full
+    if (endToEndCount == LATENCY_SAMPLE_SIZE) {
+      totalEndToEndLatency -= endToEndSamples[endToEndIndex];
+    } else {
+      endToEndCount++;
+    }
+    
+    // Add new sample
+    endToEndSamples[endToEndIndex] = latency;
+    totalEndToEndLatency += latency;
+    endToEndIndex = (endToEndIndex + 1) % LATENCY_SAMPLE_SIZE;
+  }
+  
   unsigned long getAverage() const {
     return sampleCount > 0 ? totalLatency / sampleCount : 0;
+  }
+  
+  unsigned long getEndToEndAverage() const {  // NEW: Get average end-to-end latency
+    return endToEndCount > 0 ? totalEndToEndLatency / endToEndCount : 0;
   }
   
   unsigned long getMin() const {
@@ -88,9 +177,27 @@ struct LatencyTracker {
     }
     return max_val;
   }
+  
+  unsigned long getEndToEndMin() const {  // NEW: Get min end-to-end latency
+    if (endToEndCount == 0) return 0;
+    unsigned long min_val = endToEndSamples[0];
+    for (int i = 1; i < endToEndCount; i++) {
+      if (endToEndSamples[i] < min_val) min_val = endToEndSamples[i];
+    }
+    return min_val;
+  }
+  
+  unsigned long getEndToEndMax() const {  // NEW: Get max end-to-end latency
+    if (endToEndCount == 0) return 0;
+    unsigned long max_val = endToEndSamples[0];
+    for (int i = 1; i < endToEndCount; i++) {
+      if (endToEndSamples[i] > max_val) max_val = endToEndSamples[i];
+    }
+    return max_val;
+  }
 };
 
-// Implementasi WebSocket Client Sederhana (Optimized)
+// Implementasi WebSocket Client Sederhana (Same as before)
 class SimpleWebSocketClient {
 private:
   TinyGsmClient* client;
@@ -363,7 +470,7 @@ public:
   }
 };
 
-// WebSocket Manager Class (Optimized)
+// WebSocket Manager Class (Enhanced for Database Compliance)
 class WebSocketManager {
 private:
   SimpleWebSocketClient* wsClient;
@@ -374,12 +481,14 @@ private:
   unsigned long lastReconnectAttempt = 0;
   int reconnectAttempts = 0;
   
-  // Statistik dengan performance tracking
-  WSStats stats = {0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, false};
-  LatencyTracker latencyTracker = {{0}, 0, 0, 0, false};
+  // Statistik dengan enhanced latency tracking
+  WSStats stats = {0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, UINT32_MAX, 0, 0, false};
+  LatencyTracker latencyTracker = {{0}, {0}, 0, 0, 0, 0, 0, 0, false};
+  LatencyMeasurement currentMeasurement;  // NEW: Current latency measurement
   
   // Callbacks
   void (*onRelayUpdateCallback)(bool newState) = nullptr;
+  void (*onDataConfirmationCallback)(const String& id, bool success, unsigned long latency) = nullptr;  // NEW
   
   // Konfigurasi (optimized)
   const char* wsUrl = WS_URL;
@@ -393,6 +502,7 @@ private:
   
   // Optimized payload buffer for reuse
   char payloadBuffer[MAX_PAYLOAD_SIZE];
+  char websocketBuffer[MAX_PAYLOAD_SIZE + 100];  // Extra space for WebSocket wrapper
   
   void subscribeToVehicle() {
     if (millis() - lastSubscribeAttempt < 3000) { // Reduced from 5000
@@ -428,6 +538,13 @@ private:
     LOG_DEBUG(MODULE_WS, "Memproses message (len=%d): %.100s...", 
               message.length(), message.c_str());
     
+    // Check for database confirmation first (NEW)
+    if (message.indexOf("\"collection\":\"vehicle_datas\"") > 0 && 
+        message.indexOf("\"action\":\"create\"") > 0) {
+      processDatabaseConfirmation(message);
+      return;
+    }
+    
     // Gunakan smaller JSON document untuk better performance
     DynamicJsonDocument doc(2048); // Reduced from 4096
     DeserializationError error = deserializeJson(doc, message);
@@ -456,6 +573,45 @@ private:
       LOG_DEBUG(MODULE_WS, "Ping dari server diterima");
     } else {
       LOG_DEBUG(MODULE_WS, "Message type tidak dikenal: %s", type);
+    }
+  }
+  
+  // NEW: Process database confirmation for latency calculation
+  void processDatabaseConfirmation(const String& message) {
+    LOG_DEBUG(MODULE_WS, "📨 Database confirmation received");
+    
+    // Extract timestamp or ID from confirmation message
+    // This is a simplified approach - in practice you'd parse the JSON properly
+    if (currentMeasurement.measuring) {
+      if (currentMeasurement.finish()) {
+        unsigned long endToEndLatency = currentMeasurement.endToEndLatency;
+        
+        // Update statistics
+        stats.endToEndSamples++;
+        stats.totalEndToEndLatency += endToEndLatency;
+        
+        if (endToEndLatency < stats.minEndToEndLatency) {
+          stats.minEndToEndLatency = endToEndLatency;
+        }
+        if (endToEndLatency > stats.maxEndToEndLatency) {
+          stats.maxEndToEndLatency = endToEndLatency;
+        }
+        
+        // Add to tracker
+        latencyTracker.addEndToEndSample(endToEndLatency);
+        
+        LOG_INFO(MODULE_WS, "📊 End-to-end latency: %lu ms", endToEndLatency);
+        
+        // Call callback if set
+        if (onDataConfirmationCallback) {
+          onDataConfirmationCallback(currentMeasurement.transmissionId, true, endToEndLatency);
+        }
+        
+        // Log if latency is high
+        if (endToEndLatency > LATENCY_WARNING_THRESHOLD) {
+          LOG_WARN(MODULE_PERF, "⚠️ High end-to-end latency: %lu ms", endToEndLatency);
+        }
+      }
     }
   }
   
@@ -643,6 +799,11 @@ private:
     return String(timestamp);
   }
   
+  // Generate unique transmission ID (NEW)
+  String generateTransmissionId() {
+    return String(millis()) + "_" + String(random(1000, 9999));
+  }
+  
 public:
   WebSocketManager(TinyGsmClient* client) : gsmClient(client) {
     wsClient = new SimpleWebSocketClient(client);
@@ -663,11 +824,23 @@ public:
       LOG_INFO(MODULE_WS, "Performance monitoring enabled");
       latencyTracker.initialized = false;
     }
+    
+    // Initialize latency calculation
+    if (ENABLE_LATENCY_CALCULATION) {
+      LOG_INFO(MODULE_WS, "End-to-end latency calculation enabled");
+      currentMeasurement.reset();
+    }
   }
   
   void setOnRelayUpdate(void (*callback)(bool)) {
     onRelayUpdateCallback = callback;
     LOG_DEBUG(MODULE_WS, "Relay update callback diset");
+  }
+  
+  // NEW: Set callback for data confirmation
+  void setOnDataConfirmation(void (*callback)(const String&, bool, unsigned long)) {
+    onDataConfirmationCallback = callback;
+    LOG_DEBUG(MODULE_WS, "Data confirmation callback diset");
   }
   
   bool connect() {
@@ -699,31 +872,7 @@ public:
     return false;
   }
   
-  void disconnect() {
-    if (state != WS_DISCONNECTED) {
-      LOG_INFO(MODULE_WS, "🔌 Memutuskan WebSocket...");
-      wsClient->disconnect();
-      state = WS_DISCONNECTED;
-      vehicleSubscribed = false;
-      
-      // Log statistik koneksi
-      if (stats.connectionTime > 0) {
-        unsigned long duration = millis() - stats.connectionTime;
-        LOG_INFO(MODULE_WS, "📊 Durasi koneksi: %s", Utils::formatUptime(duration).c_str());
-        LOG_INFO(MODULE_WS, "📊 Messages: %lu, Sent: %lu KB, Received: %lu KB",
-                 stats.totalMessages,
-                 stats.totalBytesSent / 1024,
-                 stats.totalBytesReceived / 1024);
-        
-        if (ENABLE_LATENCY_MONITORING && stats.latencySamples > 0) {
-          LOG_INFO(MODULE_WS, "📊 Avg Latency: %lu ms, Min: %lu ms, Max: %lu ms",
-                   latencyTracker.getAverage(),
-                   latencyTracker.getMin(),
-                   latencyTracker.getMax());
-        }
-      }
-    }
-  }
+  void disconnect();  // Implemented in cpp file
   
   void update() {
     if (state == WS_DISCONNECTED) {
@@ -776,15 +925,33 @@ public:
       stats.lastMessageTime = millis();
       processMessage(message);
     }
+    
+    // Check for latency measurement timeout (NEW)
+    if (ENABLE_LATENCY_CALCULATION && currentMeasurement.measuring) {
+      if (millis() - currentMeasurement.transmissionStart > LATENCY_TIMEOUT) {
+        LOG_WARN(MODULE_WS, "⚠️ Latency measurement timeout for ID: %s", 
+                 currentMeasurement.transmissionId.c_str());
+        
+        if (onDataConfirmationCallback) {
+          onDataConfirmationCallback(currentMeasurement.transmissionId, false, (unsigned long)LATENCY_INVALID_VALUE);
+        }
+        
+        currentMeasurement.reset();
+      }
+    }
   }
   
-  // OPTIMIZED: Send vehicle data with server-compatible format
+  // ENHANCED: Send vehicle data with database-compliant format and signal monitoring
   bool sendVehicleData(float lat, float lon, float speed, int satellites, 
-                       const String& timestamp, float battery = 12.5) {
+                       const String& timestamp, float rsrq = RSRQ_INVALID_VALUE, 
+                       float rsrp = RSRP_INVALID_VALUE) {
     if (!isReady()) {
       LOG_WARN(MODULE_WS, "⚠️ Tidak siap mengirim data (state: %s)", getStateString());
       return false;
     }
+    
+    // Generate transmission ID for latency tracking
+    String transmissionId = generateTransmissionId();
     
     // Start latency measurement
     if (ENABLE_LATENCY_MONITORING) {
@@ -792,78 +959,53 @@ public:
       stats.measuringLatency = true;
     }
     
-    // Create optimized payload using template from Config.h
+    // Start end-to-end latency measurement
+    if (ENABLE_LATENCY_CALCULATION) {
+      currentMeasurement.start(transmissionId);
+    }
+    
+    // Create database-compliant payload
     char latStr[16], lngStr[16];
     snprintf(latStr, sizeof(latStr), "%.5f", lat);
     snprintf(lngStr, sizeof(lngStr), "%.5f", lon);
     
-    // Use payload mode based on configuration
-    String message;
-    message.reserve(MAX_PAYLOAD_SIZE);
+    // Calculate preliminary latency (transmission preparation time)
+    float preliminaryLatency = LATENCY_INVALID_VALUE;
+    if (ENABLE_LATENCY_CALCULATION && currentMeasurement.measuring) {
+      preliminaryLatency = millis() - currentMeasurement.transmissionStart;
+    }
     
-    #if DEFAULT_PAYLOAD_MODE == PAYLOAD_MODE_ESSENTIAL
-      // Essential payload (fastest - ~140 bytes)
+    String dataPayload;
+    dataPayload.reserve(MAX_PAYLOAD_SIZE);
+    
+    // Choose payload format based on available data
+    if (rsrq != RSRQ_INVALID_VALUE && rsrp != RSRP_INVALID_VALUE) {
+      // Full payload with signal monitoring
       snprintf(payloadBuffer, sizeof(payloadBuffer), 
-        "{"
-        "\"type\":\"items\","
-        "\"collection\":\"vehicle_datas\","
-        "\"action\":\"create\","
-        "\"data\":{"
-          "\"" SERVER_FIELD_LATITUDE "\":\"%s\","
-          "\"" SERVER_FIELD_LONGITUDE "\":\"%s\","
-          "\"" SERVER_FIELD_SPEED "\":%d,"
-          "\"" SERVER_FIELD_SATELLITES "\":%d,"
-          "\"" SERVER_FIELD_TIMESTAMP "\":\"%s\","
-          "\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\""
-        "}"
-        "}",
-        latStr, lngStr, (int)speed, satellites, timestamp.c_str()
+        DB_FULL_PAYLOAD_TEMPLATE,
+        latStr, lngStr, (int)round(speed), satellites, timestamp.c_str(),
+        rsrq, rsrp, preliminaryLatency
       );
-    #elif DEFAULT_PAYLOAD_MODE == PAYLOAD_MODE_FULL
-      // Full payload with battery (~180 bytes)
+    } else {
+      // Essential payload without signal data
       snprintf(payloadBuffer, sizeof(payloadBuffer),
-        "{"
-        "\"type\":\"items\","
-        "\"collection\":\"vehicle_datas\","
-        "\"action\":\"create\","
-        "\"data\":{"
-          "\"" SERVER_FIELD_LATITUDE "\":\"%s\","
-          "\"" SERVER_FIELD_LONGITUDE "\":\"%s\","
-          "\"" SERVER_FIELD_SPEED "\":%d,"
-          "\"" SERVER_FIELD_RPM "\":null,"
-          "\"" SERVER_FIELD_FUEL_LEVEL "\":null,"
-          "\"" SERVER_FIELD_IGNITION_STATUS "\":null,"
-          "\"" SERVER_FIELD_BATTERY_LEVEL "\":%.1f,"
-          "\"" SERVER_FIELD_SATELLITES "\":%d,"
-          "\"" SERVER_FIELD_TIMESTAMP "\":\"%s\","
-          "\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\""
-        "}"
-        "}",
-        latStr, lngStr, (int)speed, battery, satellites, timestamp.c_str()
+        DB_ESSENTIAL_PAYLOAD_TEMPLATE,
+        latStr, lngStr, (int)round(speed), satellites, timestamp.c_str()
       );
-    #else
-      // Minimal payload for testing (~90 bytes)
-      snprintf(payloadBuffer, sizeof(payloadBuffer),
-        "{"
-        "\"type\":\"items\","
-        "\"collection\":\"vehicle_datas\","
-        "\"action\":\"create\","
-        "\"data\":{"
-          "\"" SERVER_FIELD_LATITUDE "\":\"%s\","
-          "\"" SERVER_FIELD_LONGITUDE "\":\"%s\","
-          "\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\""
-        "}"
-        "}",
-        latStr, lngStr
-      );
-    #endif
+    }
     
-    message = String(payloadBuffer);
+    // Wrap for WebSocket transmission
+    snprintf(websocketBuffer, sizeof(websocketBuffer),
+      WS_DB_PAYLOAD_WRAPPER, payloadBuffer);
     
-    // Log payload size for optimization
+    String message = String(websocketBuffer);
+    
+    // Log payload info
     if (DEBUG_PAYLOAD_SIZE) {
-      LOG_DEBUG(MODULE_WS, "📤 Payload size: %d bytes (mode: %d)", 
-                message.length(), DEFAULT_PAYLOAD_MODE);
+      LOG_DEBUG(MODULE_WS, "📤 Database payload size: %d bytes", message.length());
+      if (rsrq != RSRQ_INVALID_VALUE && rsrp != RSRP_INVALID_VALUE) {
+        LOG_DEBUG(MODULE_WS, "📶 Signal metrics: RSRQ=%.2f dB, RSRP=%.2f dBm", rsrq, rsrp);
+      }
     }
     
     LOG_DEBUG(MODULE_WS, "📤 Mengirim: %s", message.c_str());
@@ -875,48 +1017,20 @@ public:
     return true;
   }
   
-  // OPTIMIZED: Alternative compact send method
+  // Alternative compact send method (UPDATED for database compliance)
   bool sendVehicleDataCompact(float lat, float lon, float speed, int satellites, 
-                             unsigned long unixTimestamp, float battery = 12.5) {
+                             unsigned long unixTimestamp, float rsrq = RSRQ_INVALID_VALUE, 
+                             float rsrp = RSRP_INVALID_VALUE) {
     if (!isReady()) {
       LOG_WARN(MODULE_WS, "⚠️ Tidak siap mengirim data (state: %s)", getStateString());
       return false;
     }
     
-    // Start latency measurement
-    if (ENABLE_LATENCY_MONITORING) {
-      stats.lastTransmissionStart = millis();
-      stats.measuringLatency = true;
-    }
-    
     // Format timestamp in ISO8601 format
     String timestamp = formatTimestamp(unixTimestamp);
     
-    // Create ultra-compact JSON manually (faster than ArduinoJSON for small payloads)
-    char latStr[12], lngStr[12];
-    snprintf(latStr, sizeof(latStr), "%.5f", lat);
-    snprintf(lngStr, sizeof(lngStr), "%.5f", lon);
-    
-    // Ultra-compact format
-    snprintf(payloadBuffer, sizeof(payloadBuffer),
-      "{\"type\":\"items\",\"collection\":\"vehicle_datas\",\"action\":\"create\","
-      "\"data\":{\"latitude\":\"%s\",\"longitude\":\"%s\",\"speed\":%d,"
-      "\"satellites_used\":%d,\"timestamp\":\"%s\",\"gps_id\":\"" GPS_ID "\"}}",
-      latStr, lngStr, (int)speed, satellites, timestamp.c_str()
-    );
-    
-    String message = String(payloadBuffer);
-    
-    if (DEBUG_PAYLOAD_SIZE) {
-      LOG_DEBUG(MODULE_WS, "📤 Compact payload: %d bytes", message.length());
-    }
-    
-    wsClient->sendText(message);
-    
-    stats.totalBytesSent += message.length();
-    stats.totalMessages++;
-    
-    return true;
+    // Call main send function
+    return sendVehicleData(lat, lon, speed, satellites, timestamp, rsrq, rsrp);
   }
   
   // Performance monitoring methods
@@ -969,6 +1083,19 @@ public:
     return latencyTracker.getMax();
   }
   
+  // NEW: End-to-end latency methods
+  unsigned long getEndToEndAverageLatency() {
+    return latencyTracker.getEndToEndAverage();
+  }
+  
+  unsigned long getEndToEndMinLatency() {
+    return latencyTracker.getEndToEndMin();
+  }
+  
+  unsigned long getEndToEndMaxLatency() {
+    return latencyTracker.getEndToEndMax();
+  }
+  
   String getPerformanceReport() {
     String report = "=== WEBSOCKET PERFORMANCE ===\n";
     report += "State: " + String(getStateString()) + "\n";
@@ -978,12 +1105,21 @@ public:
     report += "Reconnect Count: " + String(stats.reconnectCount) + "\n";
     
     if (ENABLE_LATENCY_MONITORING && stats.latencySamples > 0) {
-      report += "Latency Samples: " + String(stats.latencySamples) + "\n";
-      report += "Average Latency: " + String(getAverageLatency()) + " ms\n";
-      report += "Min Latency: " + String(getMinLatency()) + " ms\n";
-      report += "Max Latency: " + String(getMaxLatency()) + " ms\n";
+      report += "=== TRANSMISSION LATENCY ===\n";
+      report += "Samples: " + String(stats.latencySamples) + "\n";
+      report += "Average: " + String(getAverageLatency()) + " ms\n";
+      report += "Min: " + String(getMinLatency()) + " ms\n";
+      report += "Max: " + String(getMaxLatency()) + " ms\n";
+    }
+    
+    if (ENABLE_LATENCY_CALCULATION && stats.endToEndSamples > 0) {
+      report += "=== END-TO-END LATENCY ===\n";
+      report += "Samples: " + String(stats.endToEndSamples) + "\n";
+      report += "Average: " + String(getEndToEndAverageLatency()) + " ms\n";
+      report += "Min: " + String(getEndToEndMinLatency()) + " ms\n";
+      report += "Max: " + String(getEndToEndMaxLatency()) + " ms\n";
       
-      if (getAverageLatency() <= MAX_ACCEPTABLE_LATENCY) {
+      if (getEndToEndAverageLatency() <= MAX_ACCEPTABLE_LATENCY) {
         report += "Performance: ✅ GOOD\n";
       } else {
         report += "Performance: ⚠️ NEEDS OPTIMIZATION\n";
@@ -996,7 +1132,9 @@ public:
   void resetPerformanceStats() {
     memset(&stats, 0, sizeof(stats));
     stats.minLatency = UINT32_MAX;
+    stats.minEndToEndLatency = UINT32_MAX;
     latencyTracker.initialized = false;
+    currentMeasurement.reset();
     LOG_INFO(MODULE_PERF, "Performance statistics reset");
   }
   
@@ -1077,8 +1215,11 @@ public:
     return getAverageLatency() <= MAX_ACCEPTABLE_LATENCY;
   }
   
-  int getPayloadMode() {
-    return DEFAULT_PAYLOAD_MODE;
+  bool isEndToEndPerformanceGood() {  // NEW
+    if (!ENABLE_LATENCY_CALCULATION || stats.endToEndSamples < 3) {
+      return true; // Not enough data
+    }
+    return getEndToEndAverageLatency() <= MAX_ACCEPTABLE_LATENCY;
   }
   
   size_t getLastPayloadSize() {
@@ -1091,6 +1232,16 @@ public:
       wsClient->sendPing();
       LOG_INFO(MODULE_WS, "🏓 Force ping sent");
     }
+  }
+  
+  // NEW: Get current measurement info
+  const LatencyMeasurement& getCurrentMeasurement() const {
+    return currentMeasurement;
+  }
+  
+  // NEW: Check if latency measurement is active
+  bool isLatencyMeasuring() const {
+    return currentMeasurement.measuring;
   }
 };
 

@@ -1,4 +1,4 @@
-// ModemManager.h - Manajer Modem GSM A7670C untuk ESP32 Tracker (Optimized for Low Latency)
+// ModemManager.h - Enhanced with A7670C CPSI Signal Monitoring
 #ifndef MODEM_MANAGER_H
 #define MODEM_MANAGER_H
 
@@ -26,6 +26,33 @@ struct SimInfo {
   String phoneNumber;
 };
 
+// Signal Quality Information (A7670C CPSI Support)
+struct SignalInfo {
+  int csq;                    // Classic signal quality (0-31, 99=unknown)
+  float rsrq;                 // Reference Signal Received Quality (dB) - from CPSI
+  float rsrp;                 // Reference Signal Received Power (dBm) - from CPSI
+  unsigned long lastUpdate;   // Timestamp of last update
+  bool rsrqValid;             // RSRQ value is valid (from CPSI)
+  bool rsrpValid;             // RSRP value is valid (from CPSI)
+  
+  void reset() {
+    csq = 99;
+    rsrq = RSRQ_INVALID_VALUE;
+    rsrp = RSRP_INVALID_VALUE;
+    lastUpdate = 0;
+    rsrqValid = false;
+    rsrpValid = false;
+  }
+  
+  bool isValid() const {
+    return csq != 99 && csq > 0;
+  }
+  
+  bool hasLteMetrics() const {
+    return rsrqValid && rsrpValid;
+  }
+};
+
 // Network optimization status
 struct NetworkOptimization {
   bool lteOnlyMode;
@@ -50,8 +77,11 @@ private:
   // Status tracking
   ModemStatus currentStatus;
   unsigned long lastStatusCheck;
-  int lastSignalQuality;
   String lastOperator;
+  
+  // Signal monitoring (A7670C CPSI)
+  SignalInfo signalInfo;
+  unsigned long lastSignalUpdate;
   
   // SIM card info
   SimInfo simInfo;
@@ -72,10 +102,23 @@ private:
   } perfStats;
   
   // ===== HELPER METHODS =====
-  bool waitForATResponse(unsigned long timeout = 2000);  // Reduced default timeout
-  bool waitForNetwork(unsigned long timeout = 8000);     // Reduced default timeout
+  bool waitForATResponse(unsigned long timeout = 2000);
+  bool waitForNetwork(unsigned long timeout = 8000);
   bool checkSimCard();
   void updateStatus();
+  
+  // ===== A7670C CPSI SIGNAL MONITORING METHODS (NEW) =====
+  bool updateSignalMetrics();                   // Update RSRQ/RSRP using CPSI
+  bool parseCPSIResponse(const String& response); // Parse AT+CPSI response (A7670C)
+  bool parseLTECPSI(const String& cpsiLine);    // Parse LTE specific CPSI data
+  bool debugCPSIResponse();                     // Debug CPSI response for troubleshooting
+  bool forceLTEMode();                          // Force A7670C to LTE-only mode
+  void logSignalQuality();                      // Log signal metrics
+  
+  // ===== LEGACY CESQ METHODS (fallback for compatibility) =====
+  bool parseSignalResponse(const String& response); // Parse AT+CESQ response (fallback)
+  float parseRSRQ(int rawValue);                // Convert raw RSRQ to dB (CESQ)
+  float parseRSRP(int rawValue);                // Convert raw RSRP to dBm (CESQ)
   
   // ===== OPTIMIZATION METHODS =====
   bool applyLTEOnlyMode();
@@ -106,6 +149,21 @@ public:
   void forceOptimizationReapply();      // Force re-apply optimizations
   NetworkOptimization getOptimizationStatus() const { return netOptStatus; }
   
+  // ===== A7670C SIGNAL MONITORING FUNCTIONS (CPSI-based) =====
+  void updateSignalInfo();              // Update all signal information using CPSI
+  int getSignalQuality();               // Get classic CSQ value (0-31)
+  float getRSRQ();                      // Get RSRQ value in dB (from CPSI)
+  float getRSRP();                      // Get RSRP value in dBm (from CPSI)
+  const SignalInfo& getSignalInfo() const { return signalInfo; }
+  String getSignalQualityReport() const; // Get formatted signal report
+  bool isSignalWeak() const;            // Check if signal is weak
+  bool isSignalStrong() const;          // Check if signal is strong
+  bool hasValidLteMetrics() const { return signalInfo.hasLteMetrics(); }
+  bool isInLTEMode() const;             // Check if modem is in LTE mode
+  String getCurrentNetworkMode();       // Get current network mode (LTE/GSM/UMTS)
+  String getLTEBandInfo();              // Get current LTE band information
+  bool validateLTESignal() const;       // Validate if LTE signal metrics are reliable
+  
   // ===== PERFORMANCE MONITORING =====
   void startLatencyMeasurement();       // Start measuring transmission latency
   void endLatencyMeasurement();         // End measuring and record latency
@@ -119,7 +177,6 @@ public:
   // ===== STATUS GETTERS =====
   bool isNetworkConnected() const { return modem.isNetworkConnected(); }
   bool isGprsConnected() const { return modem.isGprsConnected(); }
-  int getSignalQuality();    // Update dan return signal quality (faster caching)
   String getOperator();      // Update dan return operator name (faster caching)
   int getResetRetries() const { return resetRetries; }
   ModemStatus getStatus() const { return currentStatus; }
@@ -138,25 +195,27 @@ public:
   
   // ===== MONITORING =====
   void updateNetworkStatus();  // Update semua status network (faster)
-  String getNetworkInfo();     // Get formatted network info (includes optimization status)
-  bool isSignalWeak() const { return lastSignalQuality < 10; }
-  bool isSignalStrong() const { return lastSignalQuality > 20; }
+  String getNetworkInfo();     // Get formatted network info (includes A7670C CPSI data)
   bool requiresOptimization() const;  // Check if optimization is needed
   
-  // ===== ADVANCED DIAGNOSTICS =====
+  // ===== ENHANCED DIAGNOSTICS FOR A7670C =====
   bool performNetworkDiagnostic();     // Comprehensive network test
+  bool performLTEDiagnostic();          // A7670C LTE-specific diagnostic
   String getCurrentNetworkTechnology(); // Get current network tech (2G/3G/4G)
-  int getBandInfo();                   // Get current LTE band
-  bool testDataConnection();           // Quick data connection test
-  void logOptimizationDetails();       // Log detailed optimization status
+  String getCPSIInfo();                 // Get formatted CPSI information
+  bool optimizeForLTE();                // Apply A7670C LTE optimizations
+  int getBandInfo();                    // Get current LTE band
+  bool testDataConnection();            // Quick data connection test
+  void logOptimizationDetails();        // Log detailed optimization status
   
   // ===== DEBUGGING =====
   void sendATCommand(const String& command);
-  String readATResponse(unsigned long timeout = 500);  // Reduced default timeout
+  String readATResponse(unsigned long timeout = 500);
   
   // ===== CONFIGURATION =====
   void setOptimizationMode(bool enable);  // Enable/disable auto-optimization
   void setPerformanceMonitoring(bool enable); // Enable/disable perf monitoring
+  void setSignalMonitoring(bool enable);  // Enable/disable A7670C CPSI signal monitoring
   
   // ===== CONSTANTS FOR OPTIMIZATION =====
   static const unsigned long MAINTENANCE_INTERVAL = 30000;     // 30 seconds
@@ -164,6 +223,12 @@ public:
   static const unsigned long FAST_STATUS_UPDATE = 15000;       // 15 seconds
   static const int MIN_SIGNAL_FOR_OPTIMIZATION = 15;           // Minimum signal for optimization
   static const int MAX_LATENCY_THRESHOLD = 2000;               // 2 seconds max acceptable latency
+  
+  // ===== A7670C SPECIFIC CONSTANTS =====
+  static const unsigned long A7670C_CPSI_INTERVAL = 5000;        // CPSI update interval
+  static const unsigned long A7670C_LTE_SWITCH_TIMEOUT = 10000;  // LTE mode switch timeout
+  static const int A7670C_MIN_LTE_RSRP = -120;                   // Minimum usable LTE RSRP
+  static const int A7670C_MIN_LTE_RSRQ = -15;                    // Minimum usable LTE RSRQ
   
   // Untuk unit testing
   friend class ModemManagerTest;
@@ -176,6 +241,16 @@ namespace ModemOptimization {
   String getOptimizationRecommendation(int signalQuality, const String& operator_name);
   unsigned long calculateOptimalTimeout(int signalQuality);
   bool shouldApplyAggression(int consecutiveFailures);
+}
+
+// ===== SIGNAL QUALITY HELPERS (A7670C CPSI) =====
+namespace SignalAnalysis {
+  // Signal quality analysis functions
+  String getSignalQualityDescription(int csq);
+  String getRSRQQualityDescription(float rsrq);
+  String getRSRPQualityDescription(float rsrp);
+  bool isSignalSuitableForOptimization(const SignalInfo& signal);
+  float calculateSignalScore(const SignalInfo& signal); // 0-100 score
 }
 
 #endif // MODEM_MANAGER_H

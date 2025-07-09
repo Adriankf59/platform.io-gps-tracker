@@ -1,4 +1,4 @@
-// ModemManager.cpp - Implementasi Manajer Modem (Optimized for Low Latency)
+// ModemManager.cpp - Complete Implementation with All Methods
 #include "ModemManager.h"
 
 // Konstruktor
@@ -11,8 +11,8 @@ ModemManager::ModemManager(TinyGsm& modemInstance, HardwareSerial& serial)
     resetRetries(0),
     currentStatus(MODEM_STATUS_OFF),
     lastStatusCheck(0),
-    lastSignalQuality(99),
     lastOperator("Unknown"),
+    lastSignalUpdate(0),
     optimizationsApplied(false) {
   
   // Inisialisasi SIM info
@@ -20,6 +20,9 @@ ModemManager::ModemManager(TinyGsm& modemInstance, HardwareSerial& serial)
   simInfo.imsi = "";
   simInfo.iccid = "";
   simInfo.phoneNumber = "";
+  
+  // Inisialisasi signal info (NEW)
+  signalInfo.reset();
   
   // Inisialisasi optimization status
   netOptStatus = {false, false, false, false, false, 0};
@@ -55,6 +58,305 @@ void ModemManager::begin() {
   delay(500);
   
   LOG_INFO(MODULE_MODEM, "Hardware modem diinisialisasi");
+  
+  // Initialize signal monitoring
+  if (ENABLE_SIGNAL_MONITORING) {
+    LOG_INFO(MODULE_SIGNAL, "Signal monitoring enabled (RSRQ/RSRP)");
+  }
+}
+
+// Send AT command untuk debugging
+void ModemManager::sendATCommand(const String& command) {
+  LOG_DEBUG(MODULE_MODEM, "AT Command: %s", command.c_str());
+  serialAT.println(command);
+}
+
+// Read AT response untuk debugging dengan faster timeout
+String ModemManager::readATResponse(unsigned long timeout) {
+  String response = "";
+  unsigned long start = millis();
+  
+  while (millis() - start < timeout) {
+    if (serialAT.available()) {
+      response += serialAT.readString();
+    }
+    delay(5); // Reduced delay for faster response
+  }
+  
+  return response;
+}
+
+// Tunggu response AT command dengan timeout yang lebih aggressive
+bool ModemManager::waitForATResponse(unsigned long timeout) {
+  unsigned long start = millis();
+  String response = "";
+  
+  while (millis() - start < timeout) {
+    if (serialAT.available()) {
+      char c = serialAT.read();
+      response += c;
+      
+      // Quick check for OK/ERROR without waiting for full response
+      if (response.endsWith("OK\r\n") || response.endsWith("OK\n")) {
+        return true;
+      }
+      if (response.indexOf("ERROR") >= 0) {
+        LOG_WARN(MODULE_MODEM, "AT command error: %s", response.c_str());
+        return false;
+      }
+    }
+    delay(10); // Smaller delay for faster response
+  }
+  
+  LOG_DEBUG(MODULE_MODEM, "AT response timeout. Response: %s", response.c_str());
+  return false;
+}
+
+// ===== SIGNAL MONITORING METHODS (NEW) =====
+
+bool ModemManager::updateSignalMetrics() {
+  if (!ENABLE_SIGNAL_MONITORING) {
+    return false;
+  }
+  
+  // Check if update is needed
+  if (millis() - lastSignalUpdate < SIGNAL_MONITORING_INTERVAL) {
+    return signalInfo.isValid();
+  }
+  
+  LOG_DEBUG(MODULE_SIGNAL, "Updating signal metrics...");
+  
+  // Get classic CSQ first
+  int csq = modem.getSignalQuality();
+  signalInfo.csq = csq;
+  
+  // Get LTE signal metrics (RSRQ/RSRP) using AT+CESQ
+  sendATCommand("AT+CESQ");
+  String response = readATResponse(3000);
+  
+  bool lteMetricsUpdated = parseSignalResponse(response);
+  
+  signalInfo.lastUpdate = millis();
+  lastSignalUpdate = millis();
+  
+  // Log signal metrics if debugging enabled
+  if (DEBUG_SIGNAL_MONITORING) {
+    logSignalQuality();
+  }
+  
+  return signalInfo.isValid() || lteMetricsUpdated;
+}
+
+bool ModemManager::parseSignalResponse(const String& response) {
+  // Parse AT+CESQ response
+  // Expected format: +CESQ: rxlev,ber,rscp,ecn0,rsrq,rsrp
+  // For LTE: rxlev=99, ber=99, rscp=255, ecn0=255, rsrq=0-34 (34=invalid), rsrp=0-97 (97=invalid)
+  
+  int cesqIndex = response.indexOf("+CESQ:");
+  if (cesqIndex < 0) {
+    LOG_WARN(MODULE_SIGNAL, "No +CESQ response found");
+    return false;
+  }
+  
+  // Extract the values after +CESQ:
+  String valuesStr = response.substring(cesqIndex + 6);
+  valuesStr.trim();
+  
+  // Parse comma-separated values
+  int values[6] = {255, 255, 255, 255, 255, 255}; // Initialize with invalid values
+  int valueIndex = 0;
+  int startPos = 0;
+  
+  for (int i = 0; i < valuesStr.length() && valueIndex < 6; i++) {
+    if (valuesStr[i] == ',' || i == valuesStr.length() - 1) {
+      String valueStr = valuesStr.substring(startPos, i == valuesStr.length() - 1 ? i + 1 : i);
+      valueStr.trim();
+      values[valueIndex] = valueStr.toInt();
+      valueIndex++;
+      startPos = i + 1;
+    }
+  }
+  
+  // Extract RSRQ and RSRP (indices 4 and 5)
+  int rawRsrq = values[4];
+  int rawRsrp = values[5];
+  
+  LOG_DEBUG(MODULE_SIGNAL, "Raw signal values: rsrq=%d, rsrp=%d", rawRsrq, rawRsrp);
+  
+  // Convert raw values to actual dB/dBm values
+  bool rsrqValid = false;
+  bool rsrpValid = false;
+  
+  if (rawRsrq >= 0 && rawRsrq <= 33) {
+    signalInfo.rsrq = parseRSRQ(rawRsrq);
+    signalInfo.rsrqValid = true;
+    rsrqValid = true;
+  } else {
+    signalInfo.rsrq = RSRQ_INVALID_VALUE;
+    signalInfo.rsrqValid = false;
+  }
+  
+  if (rawRsrp >= 0 && rawRsrp <= 96) {
+    signalInfo.rsrp = parseRSRP(rawRsrp);
+    signalInfo.rsrpValid = true;
+    rsrpValid = true;
+  } else {
+    signalInfo.rsrp = RSRP_INVALID_VALUE;
+    signalInfo.rsrpValid = false;
+  }
+  
+  return rsrqValid || rsrpValid;
+}
+
+float ModemManager::parseRSRQ(int rawValue) {
+  // RSRQ mapping according to 3GPP TS 36.133
+  // Raw value 0-33 maps to -34 to -1 dB (step 1 dB)
+  // Raw value 34 = invalid
+  if (rawValue >= 0 && rawValue <= 33) {
+    return -34.0 + rawValue; // Range: -34 to -1 dB
+  }
+  return RSRQ_INVALID_VALUE;
+}
+
+float ModemManager::parseRSRP(int rawValue) {
+  // RSRP mapping according to 3GPP TS 36.133
+  // Raw value 0-96 maps to -141 to -44 dBm (step 1 dBm)
+  // Raw value 97 = invalid
+  if (rawValue >= 0 && rawValue <= 96) {
+    return -141.0 + rawValue; // Range: -141 to -44 dBm
+  }
+  return RSRP_INVALID_VALUE;
+}
+
+void ModemManager::logSignalQuality() {
+  LOG_INFO(MODULE_SIGNAL, "=== SIGNAL QUALITY ===");
+  LOG_INFO(MODULE_SIGNAL, "CSQ: %d (%s)", 
+           signalInfo.csq, 
+           SignalAnalysis::getSignalQualityDescription(signalInfo.csq).c_str());
+  
+  if (signalInfo.rsrqValid) {
+    LOG_INFO(MODULE_SIGNAL, "RSRQ: %.1f dB (%s)", 
+             signalInfo.rsrq,
+             SignalAnalysis::getRSRQQualityDescription(signalInfo.rsrq).c_str());
+  } else {
+    LOG_INFO(MODULE_SIGNAL, "RSRQ: INVALID");
+  }
+  
+  if (signalInfo.rsrpValid) {
+    LOG_INFO(MODULE_SIGNAL, "RSRP: %.1f dBm (%s)", 
+             signalInfo.rsrp,
+             SignalAnalysis::getRSRPQualityDescription(signalInfo.rsrp).c_str());
+  } else {
+    LOG_INFO(MODULE_SIGNAL, "RSRP: INVALID");
+  }
+  
+  if (signalInfo.hasLteMetrics()) {
+    float score = SignalAnalysis::calculateSignalScore(signalInfo);
+    LOG_INFO(MODULE_SIGNAL, "Overall Score: %.1f/100", score);
+  }
+}
+
+// Public signal monitoring methods
+void ModemManager::updateSignalInfo() {
+  updateSignalMetrics();
+}
+
+int ModemManager::getSignalQuality() {
+  // Update if data is old
+  if (millis() - lastSignalUpdate > SIGNAL_MONITORING_INTERVAL) {
+    updateSignalMetrics();
+  }
+  return signalInfo.csq;
+}
+
+float ModemManager::getRSRQ() {
+  // Update if data is old
+  if (millis() - lastSignalUpdate > SIGNAL_MONITORING_INTERVAL) {
+    updateSignalMetrics();
+  }
+  return signalInfo.rsrqValid ? signalInfo.rsrq : RSRQ_INVALID_VALUE;
+}
+
+float ModemManager::getRSRP() {
+  // Update if data is old
+  if (millis() - lastSignalUpdate > SIGNAL_MONITORING_INTERVAL) {
+    updateSignalMetrics();
+  }
+  return signalInfo.rsrpValid ? signalInfo.rsrp : RSRP_INVALID_VALUE;
+}
+
+String ModemManager::getSignalQualityReport() const {
+  String report = "=== SIGNAL QUALITY REPORT ===\n";
+  report += "CSQ: " + String(signalInfo.csq) + " (" + 
+            SignalAnalysis::getSignalQualityDescription(signalInfo.csq) + ")\n";
+  
+  if (signalInfo.rsrqValid) {
+    report += "RSRQ: " + String(signalInfo.rsrq, 1) + " dB (" + 
+              SignalAnalysis::getRSRQQualityDescription(signalInfo.rsrq) + ")\n";
+  } else {
+    report += "RSRQ: INVALID\n";
+  }
+  
+  if (signalInfo.rsrpValid) {
+    report += "RSRP: " + String(signalInfo.rsrp, 1) + " dBm (" + 
+              SignalAnalysis::getRSRPQualityDescription(signalInfo.rsrp) + ")\n";
+  } else {
+    report += "RSRP: INVALID\n";
+  }
+  
+  if (signalInfo.hasLteMetrics()) {
+    float score = SignalAnalysis::calculateSignalScore(signalInfo);
+    report += "Score: " + String(score, 1) + "/100\n";
+    
+    if (SignalAnalysis::isSignalSuitableForOptimization(signalInfo)) {
+      report += "Status: ✅ SUITABLE FOR OPTIMIZATION\n";
+    } else {
+      report += "Status: ⚠️ POOR SIGNAL - OPTIMIZATION NEEDED\n";
+    }
+  }
+  
+  unsigned long age = (millis() - signalInfo.lastUpdate) / 1000;
+  report += "Last Update: " + String(age) + " seconds ago\n";
+  
+  return report;
+}
+
+bool ModemManager::isSignalWeak() const {
+  // Consider signal weak if CSQ < 10 OR RSRP < -110 dBm OR RSRQ < -15 dB
+  if (signalInfo.csq < SIGNAL_WEAK_THRESHOLD) {
+    return true;
+  }
+  
+  if (signalInfo.rsrpValid && signalInfo.rsrp < RSRP_POOR_THRESHOLD) {
+    return true;
+  }
+  
+  if (signalInfo.rsrqValid && signalInfo.rsrq < RSRQ_FAIR_THRESHOLD) {
+    return true;
+  }
+  
+  return false;
+}
+
+bool ModemManager::isSignalStrong() const {
+  // Consider signal strong if CSQ > 20 AND (RSRP > -90 dBm OR RSRQ > -10 dB)
+  if (signalInfo.csq <= SIGNAL_STRONG_THRESHOLD) {
+    return false;
+  }
+  
+  bool rsrpStrong = signalInfo.rsrpValid && signalInfo.rsrp > RSRP_GOOD_THRESHOLD;
+  bool rsrqStrong = signalInfo.rsrqValid && signalInfo.rsrq > RSRQ_GOOD_THRESHOLD;
+  
+  return rsrpStrong || rsrqStrong;
+}
+
+void ModemManager::setSignalMonitoring(bool enable) {
+  if (enable && ENABLE_SIGNAL_MONITORING) {
+    LOG_INFO(MODULE_SIGNAL, "Signal monitoring enabled");
+    lastSignalUpdate = 0; // Force immediate update
+  } else {
+    LOG_INFO(MODULE_SIGNAL, "Signal monitoring disabled");
+  }
 }
 
 // Apply network optimizations for low latency
@@ -133,6 +435,15 @@ bool ModemManager::applyNetworkOptimizations() {
   netOptStatus.lastApplied = millis(); // Update optimization timestamp
   LOG_INFO(MODULE_MODEM, "✅ Optimasi jaringan berhasil diterapkan");
   
+  // Update signal metrics after optimization
+  if (ENABLE_SIGNAL_MONITORING) {
+    Utils::safeDelay(2000); // Wait for optimization to take effect
+    updateSignalMetrics();
+    if (DEBUG_SIGNAL_MONITORING) {
+      logSignalQuality();
+    }
+  }
+  
   return true;
 }
 
@@ -141,33 +452,8 @@ void ModemManager::reapplyOptimizations() {
   optimizationsApplied = false;
   // Reset optimization status
   netOptStatus = {false, false, false, false, false, 0};
+  signalInfo.reset(); // Reset signal info to force update
   applyNetworkOptimizations();
-}
-
-// Tunggu response AT command dengan timeout yang lebih aggressive
-bool ModemManager::waitForATResponse(unsigned long timeout) {
-  unsigned long start = millis();
-  String response = "";
-  
-  while (millis() - start < timeout) {
-    if (serialAT.available()) {
-      char c = serialAT.read();
-      response += c;
-      
-      // Quick check for OK/ERROR without waiting for full response
-      if (response.endsWith("OK\r\n") || response.endsWith("OK\n")) {
-        return true;
-      }
-      if (response.indexOf("ERROR") >= 0) {
-        LOG_WARN(MODULE_MODEM, "AT command error: %s", response.c_str());
-        return false;
-      }
-    }
-    delay(10); // Smaller delay for faster response
-  }
-  
-  LOG_DEBUG(MODULE_MODEM, "AT response timeout. Response: %s", response.c_str());
-  return false;
 }
 
 // Tunggu koneksi network dengan optimized polling
@@ -188,6 +474,7 @@ bool ModemManager::waitForNetwork(unsigned long timeout) {
     // Update signal quality selama menunggu
     int csq = modem.getSignalQuality();
     if (csq != 99) {
+      signalInfo.csq = csq; // Update CSQ immediately
       LOG_DEBUG(MODULE_MODEM, "Signal quality: %d", csq);
     }
   }
@@ -254,6 +541,12 @@ bool ModemManager::connectGprs() {
     String response = readATResponse(1000);
     if (response.indexOf("+CGACT: 1,1") >= 0) {
       LOG_DEBUG(MODULE_MODEM, "✅ PDP context aktif");
+      
+      // Update signal metrics after GPRS connection
+      if (ENABLE_SIGNAL_MONITORING) {
+        updateSignalMetrics();
+      }
+      
       return true;
     }
   }
@@ -341,6 +634,11 @@ bool ModemManager::setup() {
   // Update network info
   updateNetworkStatus();
   
+  // Update signal metrics if monitoring enabled
+  if (ENABLE_SIGNAL_MONITORING) {
+    updateSignalMetrics();
+  }
+  
   // Koneksi GPRS dengan optimasi
   LOG_INFO(MODULE_MODEM, "Menghubungkan ke GPRS (APN: %s)...", APN);
   
@@ -366,8 +664,12 @@ bool ModemManager::setup() {
     applyNetworkOptimizations();
   }
   
-  // Log final network info
+  // Log final network and signal info
   LOG_INFO(MODULE_MODEM, getNetworkInfo().c_str());
+  
+  if (ENABLE_SIGNAL_MONITORING && signalInfo.hasLteMetrics()) {
+    LOG_INFO(MODULE_SIGNAL, getSignalQualityReport().c_str());
+  }
   
   return true;
 }
@@ -420,21 +722,25 @@ void ModemManager::maintainConnection() {
         reapplyOptimizations();
       }
       
-      // Update signal quality for monitoring
+      // Update network and signal status
       updateNetworkStatus();
+      
+      // Update signal metrics if monitoring enabled
+      if (ENABLE_SIGNAL_MONITORING) {
+        updateSignalMetrics();
+      }
     }
     
     lastMaintenance = currentTime;
   }
 }
 
-// REMOVED: areOptimizationsApplied() - already defined inline in header
-
 // Force re-optimization (useful after modem reset)
 void ModemManager::forceOptimizationReapply() {
   optimizationsApplied = false;
   // Reset optimization status
   netOptStatus = {false, false, false, false, false, 0};
+  signalInfo.reset(); // Reset signal info
   applyNetworkOptimizations();
 }
 
@@ -606,24 +912,19 @@ bool ModemManager::updateSimInfo() {
   return simInfo.isReady;
 }
 
-// Update status network dengan faster polling
+// Update status network dengan signal monitoring
 void ModemManager::updateNetworkStatus() {
-  // Update signal quality
-  lastSignalQuality = modem.getSignalQuality();
+  // Update signal quality (includes RSRQ/RSRP if monitoring enabled)
+  if (ENABLE_SIGNAL_MONITORING) {
+    updateSignalMetrics();
+  } else {
+    signalInfo.csq = modem.getSignalQuality();
+  }
   
   // Update operator
   lastOperator = modem.getOperator();
   
   lastStatusCheck = millis();
-}
-
-// Get signal quality dengan faster caching
-int ModemManager::getSignalQuality() {
-  // Update jika data lama (> 15 detik instead of 30)
-  if (millis() - lastStatusCheck > 15000) {
-    updateNetworkStatus();
-  }
-  return lastSignalQuality;
 }
 
 // Get operator dengan faster caching
@@ -648,14 +949,33 @@ const char* ModemManager::getStatusString() const {
   }
 }
 
-// Get formatted network info
+// Get formatted network info with signal monitoring
 String ModemManager::getNetworkInfo() {
   updateNetworkStatus();
   
   String info = "=== NETWORK INFO ===\n";
   info += "Status: " + String(getStatusString()) + "\n";
   info += "Operator: " + lastOperator + "\n";
-  info += "Signal: " + String(lastSignalQuality) + " (" + Utils::getSignalQualityString(lastSignalQuality) + ")\n";
+  info += "Signal: " + String(signalInfo.csq) + " (" + Utils::getSignalQualityString(signalInfo.csq) + ")\n";
+  
+  if (ENABLE_SIGNAL_MONITORING && signalInfo.hasLteMetrics()) {
+    info += "RSRQ: ";
+    if (signalInfo.rsrqValid) {
+      info += String(signalInfo.rsrq, 1) + " dB (" + 
+              SignalAnalysis::getRSRQQualityDescription(signalInfo.rsrq) + ")\n";
+    } else {
+      info += "INVALID\n";
+    }
+    
+    info += "RSRP: ";
+    if (signalInfo.rsrpValid) {
+      info += String(signalInfo.rsrp, 1) + " dBm (" + 
+              SignalAnalysis::getRSRPQualityDescription(signalInfo.rsrp) + ")\n";
+    } else {
+      info += "INVALID\n";
+    }
+  }
+  
   info += "Optimizations: " + String(optimizationsApplied ? "APPLIED" : "NOT APPLIED") + "\n";
   
   if (simInfo.isReady) {
@@ -666,27 +986,6 @@ String ModemManager::getNetworkInfo() {
   }
   
   return info;
-}
-
-// Send AT command untuk debugging
-void ModemManager::sendATCommand(const String& command) {
-  LOG_DEBUG(MODULE_MODEM, "AT Command: %s", command.c_str());
-  serialAT.println(command);
-}
-
-// Read AT response untuk debugging dengan faster timeout
-String ModemManager::readATResponse(unsigned long timeout) {
-  String response = "";
-  unsigned long start = millis();
-  
-  while (millis() - start < timeout) {
-    if (serialAT.available()) {
-      response += serialAT.readString();
-    }
-    delay(5); // Reduced delay for faster response
-  }
-  
-  return response;
 }
 
 // Performance monitoring methods
@@ -819,7 +1118,7 @@ void ModemManager::logOptimizationDetails() {
 bool ModemManager::requiresOptimization() const {
   // Check if optimization is needed based on conditions
   if (!optimizationsApplied) return true;
-  if (lastSignalQuality < SIGNAL_WEAK_THRESHOLD) return true;
+  if (signalInfo.csq < SIGNAL_WEAK_THRESHOLD) return true;
   if (getAverageLatency() > MAX_LATENCY_THRESHOLD) return true;
   
   return false;
@@ -836,5 +1135,3 @@ void ModemManager::setPerformanceMonitoring(bool enable) {
     resetPerformanceStats();
   }
 }
-
-// REMOVED: updateOptimizationStatus() - not declared in header

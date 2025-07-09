@@ -1,15 +1,11 @@
-// Config.h - Optimized Configuration for Testing Realtime GPS
+// Config.h - Updated for Database Format Compliance and Signal Monitoring
 // 
-// TESTING MODE CHANGES:
-// 1. GPS interval: 2 seconds (FULL mode) for realtime testing
-// 2. Dynamic GPS: 1s moving, 3s static (was 1s/10s)
-// 3. Sleep mode: DISABLED (activity timeout 1 hour)
-// 4. Emergency mode: DISABLED (battery threshold 9V)
-// 5. WebSocket reconnect: 1 second (was 2s)
-// 6. Connection failures: 5 attempts (was 2)
-// 7. Latency target: 2000ms (was 1500ms)
-// 8. New commands: 'send', 'interval', 'nowait'
-// 9. Enhanced movement detection: MOVING/PARKED/STATIC states
+// CHANGES FOR DATABASE COMPLIANCE:
+// 1. Updated payload templates to match exact database fields
+// 2. Added RSRQ and RSRP signal monitoring
+// 3. Removed unsupported database fields (rpm, fuel_level, ignition_status, battery_level)
+// 4. Added latency calculation from transmission to database storage
+// 5. Database handles create_at automatically on server side
 //
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -74,33 +70,28 @@
 #define GPS_ID "2d7a9833-872f-4523-b0e4-c36734940a6f"  // UUID unik untuk perangkat ini
 
 // ========================================
-// PAYLOAD STRUCTURE OPTIMIZATION
+// DATABASE-COMPLIANT PAYLOAD STRUCTURE
 // ========================================
-// Based on server endpoint structure - match exact field names for compatibility
-#define SERVER_FIELD_LATITUDE "latitude"                // Server expects: latitude (string)
-#define SERVER_FIELD_LONGITUDE "longitude"              // Server expects: longitude (string)
-#define SERVER_FIELD_SPEED "speed"                      // Server expects: speed (number)
-#define SERVER_FIELD_BATTERY_LEVEL "battery_level"      // Server expects: battery_level (number)
-#define SERVER_FIELD_SATELLITES "satellites_used"       // Server expects: satellites_used (number)
-#define SERVER_FIELD_TIMESTAMP "timestamp"              // Server expects: timestamp (ISO string)
-#define SERVER_FIELD_GPS_ID "gps_id"                    // Server expects: gps_id (string)
+// Based on actual database endpoint structure - exact field matching
+#define DB_FIELD_LATITUDE "latitude"                     // Database: latitude (string)
+#define DB_FIELD_LONGITUDE "longitude"                   // Database: longitude (string)
+#define DB_FIELD_SPEED "speed"                          // Database: speed (integer)
+#define DB_FIELD_SATELLITES "satellites_used"           // Database: satellites_used (integer)
+#define DB_FIELD_TIMESTAMP "timestamp"                  // Database: timestamp (ISO string)
+#define DB_FIELD_GPS_ID "gps_id"                        // Database: gps_id (string)
+#define DB_FIELD_RSRQ "rsrq"                           // Database: rsrq (float) - NEW
+#define DB_FIELD_RSRP "rsrp"                           // Database: rsrp (float) - NEW
+#define DB_FIELD_LATENCY "latency"                      // Database: latency (float) - calculated client-side
 
-// Optional fields (can be null for optimization)
-#define SERVER_FIELD_RPM "rpm"                          // Server allows: null
-#define SERVER_FIELD_FUEL_LEVEL "fuel_level"            // Server allows: null
-#define SERVER_FIELD_IGNITION_STATUS "ignition_status"  // Server allows: null
+// Note: create_at is handled automatically by database on server side
 
-// Payload optimization modes
-#define PAYLOAD_MODE_FULL 0                             // Include all fields
-#define PAYLOAD_MODE_ESSENTIAL 1                        // Only required fields
-#define PAYLOAD_MODE_MINIMAL 2                          // Absolute minimum fields
-#define DEFAULT_PAYLOAD_MODE PAYLOAD_MODE_ESSENTIAL     // Balanced approach
-
-// Data type optimization for server compatibility
+// Data type precision for database compatibility
 #define LATITUDE_PRECISION 5                            // Decimal places for latitude (string)
 #define LONGITUDE_PRECISION 5                           // Decimal places for longitude (string)
-#define SPEED_PRECISION 1                               // Decimal places for speed
-#define BATTERY_PRECISION 1                             // Decimal places for battery level
+#define SPEED_PRECISION 0                               // Integer for speed (no decimals)
+#define RSRQ_PRECISION 2                                // 2 decimal places for RSRQ
+#define RSRP_PRECISION 2                                // 2 decimal places for RSRP
+#define LATENCY_PRECISION 1                             // 1 decimal place for latency
 
 // ========================================
 // KONFIGURASI JARINGAN (OPTIMIZED FOR TESTING)
@@ -139,38 +130,79 @@
 #define ENABLE_PAYLOAD_OPTIMIZATION true         // Optimize JSON payload size
 
 // ========================================
-// OPTIMIZED PAYLOAD TEMPLATES
+// DATABASE-COMPLIANT PAYLOAD TEMPLATES
 // ========================================
-// Essential payload template (minimal required fields)
-#define ESSENTIAL_PAYLOAD_TEMPLATE "{\
-\"" SERVER_FIELD_LATITUDE "\":\"%s\",\
-\"" SERVER_FIELD_LONGITUDE "\":\"%s\",\
-\"" SERVER_FIELD_SPEED "\":%d,\
-\"" SERVER_FIELD_SATELLITES "\":%d,\
-\"" SERVER_FIELD_TIMESTAMP "\":\"%s\",\
-\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\"\
+// Essential payload template (core required fields only)
+#define DB_ESSENTIAL_PAYLOAD_TEMPLATE "{\
+\"" DB_FIELD_LATITUDE "\":\"%s\",\
+\"" DB_FIELD_LONGITUDE "\":\"%s\",\
+\"" DB_FIELD_SPEED "\":%d,\
+\"" DB_FIELD_SATELLITES "\":%d,\
+\"" DB_FIELD_TIMESTAMP "\":\"%s\",\
+\"" DB_FIELD_GPS_ID "\":\"" GPS_ID "\"\
 }"
 
-// Full payload template (all fields including nullables)
-#define FULL_PAYLOAD_TEMPLATE "{\
-\"" SERVER_FIELD_LATITUDE "\":\"%s\",\
-\"" SERVER_FIELD_LONGITUDE "\":\"%s\",\
-\"" SERVER_FIELD_SPEED "\":%d,\
-\"" SERVER_FIELD_RPM "\":null,\
-\"" SERVER_FIELD_FUEL_LEVEL "\":null,\
-\"" SERVER_FIELD_IGNITION_STATUS "\":null,\
-\"" SERVER_FIELD_BATTERY_LEVEL "\":%.1f,\
-\"" SERVER_FIELD_SATELLITES "\":%d,\
-\"" SERVER_FIELD_TIMESTAMP "\":\"%s\",\
-\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\"\
+// Full payload template (with signal monitoring)
+#define DB_FULL_PAYLOAD_TEMPLATE "{\
+\"" DB_FIELD_LATITUDE "\":\"%s\",\
+\"" DB_FIELD_LONGITUDE "\":\"%s\",\
+\"" DB_FIELD_SPEED "\":%d,\
+\"" DB_FIELD_SATELLITES "\":%d,\
+\"" DB_FIELD_TIMESTAMP "\":\"%s\",\
+\"" DB_FIELD_GPS_ID "\":\"" GPS_ID "\",\
+\"" DB_FIELD_RSRQ "\":%.2f,\
+\"" DB_FIELD_RSRP "\":%.2f,\
+\"" DB_FIELD_LATENCY "\":%.1f\
 }"
 
 // Minimal payload template (absolute minimum for testing)
-#define MINIMAL_PAYLOAD_TEMPLATE "{\
-\"" SERVER_FIELD_LATITUDE "\":\"%s\",\
-\"" SERVER_FIELD_LONGITUDE "\":\"%s\",\
-\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\"\
+#define DB_MINIMAL_PAYLOAD_TEMPLATE "{\
+\"" DB_FIELD_LATITUDE "\":\"%s\",\
+\"" DB_FIELD_LONGITUDE "\":\"%s\",\
+\"" DB_FIELD_GPS_ID "\":\"" GPS_ID "\"\
 }"
+
+// WebSocket wrapper for database payloads
+#define WS_DB_PAYLOAD_WRAPPER "{\
+\"type\":\"items\",\
+\"collection\":\"vehicle_datas\",\
+\"action\":\"create\",\
+\"data\":%s\
+}"
+
+// ========================================
+// SIGNAL MONITORING CONFIGURATION (FIXED - CONSISTENT WITH SignalAnalysis.h)
+// ========================================
+#define ENABLE_SIGNAL_MONITORING true           // Enable RSRQ/RSRP monitoring
+#define DEBUG_SIGNAL_MONITORING true            // Log RSRQ/RSRP values
+#define SIGNAL_MONITORING_INTERVAL 5000         // Update signal values every 5 seconds
+
+// Invalid signal values (FIXED - consistent with SignalAnalysis.h)
+#define RSRQ_INVALID_VALUE -999.0f              // Value to indicate invalid RSRQ (float)
+#define RSRP_INVALID_VALUE -999.0f              // Value to indicate invalid RSRP (float)
+
+// CSQ Signal thresholds (ADDED - needed by ModemManager)
+#define SIGNAL_WEAK_THRESHOLD 10                // CSQ below 10 is weak
+#define SIGNAL_STRONG_THRESHOLD 20              // CSQ above 20 is strong
+
+// RSRQ thresholds (FINAL VERSION - NO CONFLICTS)
+#define RSRQ_EXCELLENT_THRESHOLD -8.0f          // RSRQ > -8 dB (excellent)
+#define RSRQ_GOOD_THRESHOLD -12.0f              // RSRQ > -12 dB (good)
+#define RSRQ_FAIR_THRESHOLD -15.0f              // RSRQ > -15 dB (fair) 
+#define RSRQ_POOR_THRESHOLD -20.0f              // RSRQ > -20 dB (poor)
+
+// RSRP thresholds (FINAL VERSION - NO CONFLICTS)
+#define RSRP_EXCELLENT_THRESHOLD -80.0f         // RSRP > -80 dBm (excellent)
+#define RSRP_GOOD_THRESHOLD -90.0f              // RSRP > -90 dBm (good)
+#define RSRP_FAIR_THRESHOLD -100.0f             // RSRP > -100 dBm (fair)
+#define RSRP_POOR_THRESHOLD -110.0f             // RSRP > -110 dBm (poor)
+
+// ========================================
+// LATENCY CALCULATION CONFIGURATION (NEW)
+// ========================================
+#define ENABLE_LATENCY_CALCULATION true         // Enable end-to-end latency calculation
+#define LATENCY_TIMEOUT 10000                   // Max time to wait for database confirmation (10s)
+#define LATENCY_INVALID_VALUE 0xFFFFFFFF        // Value to indicate latency calculation failed (use max uint32)
 
 // ========================================
 // PERFORMANCE MONITORING
@@ -178,6 +210,7 @@
 #define ENABLE_LATENCY_MONITORING true           // Track transmission latency
 #define LATENCY_SAMPLE_SIZE 10                   // Number of latency samples to keep
 #define MAX_ACCEPTABLE_LATENCY 2000              // Relaxed for testing (was 1500)
+// NOTE: MAX_LATENCY_THRESHOLD removed - akan didefinisikan di ModemManager.h sebagai class member
 #define LATENCY_WARNING_THRESHOLD 1500           // Warning threshold (ms)
 
 // Connection Health Monitoring
@@ -188,7 +221,6 @@
 // ========================================
 // KONFIGURASI TIMING SISTEM (TESTING MODE)
 // ========================================
-// GPS_BUFFER_CLEAR_INTERVAL already defined in GPS CONFIGURATION section
 #define WATCHDOG_TIMEOUT 120000          // Timeout watchdog timer (2 menit)
 
 // Faster Response Timeouts for testing
@@ -222,6 +254,7 @@
 #define MODULE_SYS "SYS"                 // Modul sistem
 #define MODULE_WS "WEBSOCKET"            // Modul WebSocket
 #define MODULE_PERF "PERF"               // Modul performance monitoring
+#define MODULE_SIGNAL "SIGNAL"           // Modul signal monitoring
 
 // ========================================
 // FITUR OPSIONAL (TESTING MODE)
@@ -236,9 +269,6 @@
   // Movement detection settings digunakan di movement detection baru
   // GPS_INTERVAL_MOVING, GPS_INTERVAL_PARKED, GPS_INTERVAL_STATIC sudah didefinisikan di atas
 #endif
-
-// HTTP fallback (DISABLED for testing WebSocket)
-// #define ENABLE_HTTP_FALLBACK
 
 // ========================================
 // BATTERY MONITORING (DISABLED FOR TESTING)
@@ -275,12 +305,12 @@
 // ========================================
 // PAYLOAD SIZE OPTIMIZATION
 // ========================================
-#define MAX_PAYLOAD_SIZE 256                     // Reduced from 512 to 256 bytes
+#define MAX_PAYLOAD_SIZE 512                     // Increased to accommodate RSRQ/RSRP fields
 #define ENABLE_PAYLOAD_COMPRESSION false         // Disable compression (server may not support)
 
 // Expected payload sizes for different modes:
 // ESSENTIAL: ~140 bytes
-// FULL: ~180 bytes  
+// FULL: ~220 bytes (with RSRQ/RSRP/latency)
 // MINIMAL: ~90 bytes
 
 // ========================================
@@ -292,8 +322,6 @@
 #define ENABLE_LATENCY_BASED_OPTIMIZATION true   // Optimize based on measured latency
 
 // Performance thresholds for auto-optimization
-#define SIGNAL_WEAK_THRESHOLD 10                 // Signal strength below which to optimize
-#define SIGNAL_STRONG_THRESHOLD 20               // Signal strength above which to relax optimization
 #define CONSECUTIVE_SLOW_THRESHOLD 5             // Increased for testing (was 3)
 
 // Power vs Performance balance
@@ -345,42 +373,66 @@
   #warning "GPS_INTERVAL_MOVING very aggressive, may impact performance"
 #endif
 
-#if MAX_PAYLOAD_SIZE < 128
-  #warning "MAX_PAYLOAD_SIZE very small, may not fit required data"
+#if MAX_PAYLOAD_SIZE < 256
+  #warning "MAX_PAYLOAD_SIZE small, may not fit signal monitoring data"
 #endif
 
 // ========================================
-// PAYLOAD CREATION HELPERS
+// PAYLOAD CREATION HELPERS (UPDATED)
 // ========================================
-// Helper macros for creating optimized JSON payloads
-#define CREATE_ESSENTIAL_PAYLOAD(lat_str, lng_str, speed_val, sat_val, timestamp_str) \
-  sprintf(payload_buffer, ESSENTIAL_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, sat_val, timestamp_str)
+// Helper macros for creating database-compliant JSON payloads
+#define CREATE_DB_ESSENTIAL_PAYLOAD(lat_str, lng_str, speed_val, sat_val, timestamp_str) \
+  sprintf(payload_buffer, DB_ESSENTIAL_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, sat_val, timestamp_str)
 
-#define CREATE_FULL_PAYLOAD(lat_str, lng_str, speed_val, battery_val, sat_val, timestamp_str) \
-  sprintf(payload_buffer, FULL_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, battery_val, sat_val, timestamp_str)
+#define CREATE_DB_FULL_PAYLOAD(lat_str, lng_str, speed_val, sat_val, timestamp_str, rsrq_val, rsrp_val, latency_val) \
+  sprintf(payload_buffer, DB_FULL_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, sat_val, timestamp_str, rsrq_val, rsrp_val, latency_val)
 
-#define CREATE_MINIMAL_PAYLOAD(lat_str, lng_str) \
-  sprintf(payload_buffer, MINIMAL_PAYLOAD_TEMPLATE, lat_str, lng_str)
+#define CREATE_DB_MINIMAL_PAYLOAD(lat_str, lng_str) \
+  sprintf(payload_buffer, DB_MINIMAL_PAYLOAD_TEMPLATE, lat_str, lng_str)
+
+#define WRAP_FOR_WEBSOCKET(data_json) \
+  sprintf(websocket_buffer, WS_DB_PAYLOAD_WRAPPER, data_json)
 
 // ========================================
-// CATATAN PENGEMBANGAN (TESTING MODE)
+// SIGNAL QUALITY HELPERS (UPDATED)
 // ========================================
-// 1. Sleep mode DISABLED untuk testing realtime
-// 2. Battery thresholds set sangat rendah (9V) untuk prevent emergency mode
-// 3. GPS interval dikurangi untuk testing (2 detik di FULL mode)
-// 4. Movement detection: MOVING (3s), PARKED (15s), STATIC (60s)
-// 5. WebSocket reconnect delay dikurangi ke 1 detik
-// 6. Activity timeout dinaikkan ke 1 jam
-// 7. Connection failure threshold dinaikkan untuk testing
-// 8. Latency target relaxed ke 2000ms untuk testing
-// 9. Manual speed testing enabled untuk simulasi movement
+// Helper functions for signal quality assessment
+#define GET_RSRQ_QUALITY_STRING(rsrq) \
+  ((rsrq) > RSRQ_EXCELLENT_THRESHOLD ? "EXCELLENT" : \
+   (rsrq) > RSRQ_GOOD_THRESHOLD ? "GOOD" : \
+   (rsrq) > RSRQ_FAIR_THRESHOLD ? "FAIR" : \
+   (rsrq) > RSRQ_POOR_THRESHOLD ? "POOR" : "VERY_POOR")
+
+#define GET_RSRP_QUALITY_STRING(rsrp) \
+  ((rsrp) > RSRP_EXCELLENT_THRESHOLD ? "EXCELLENT" : \
+   (rsrp) > RSRP_GOOD_THRESHOLD ? "GOOD" : \
+   (rsrp) > RSRP_FAIR_THRESHOLD ? "FAIR" : \
+   (rsrp) > RSRP_POOR_THRESHOLD ? "POOR" : "VERY_POOR")
+
+// ========================================
+// CATATAN PENGEMBANGAN (DATABASE COMPLIANCE)
+// ========================================
+// 1. Payload template disesuaikan dengan struktur database vehicle_datas
+// 2. Removed unsupported fields: rpm, fuel_level, ignition_status, battery_level
+// 3. Added RSRQ/RSRP monitoring untuk analisis kualitas sinyal
+// 4. Added client-side latency calculation (transmission to database storage)
+// 5. Database akan otomatis mengisi create_at field
+// 6. Speed field diubah menjadi integer (sesuai database)
+// 7. Koordinat tetap string dengan 5 decimal precision
+// 8. GPS ID hardcoded sesuai device yang terdaftar
+// 9. Timestamp menggunakan format ISO8601 UTC
 // 
-// Target untuk testing:
-// - Realtime tracking dengan interval 1-3 detik (moving)
-// - Smart interval adjustment based on movement state
-// - No sleep interruptions
-// - Fast recovery dari disconnections
-// - Verbose logging untuk debugging
-// - Manual speed input untuk testing tanpa perlu bergerak
+// Expected database fields:
+// - vehicle_datas_id: auto-generated by database
+// - latitude: string (GPS coordinate)
+// - longitude: string (GPS coordinate)  
+// - speed: integer (km/h)
+// - satellites_used: integer (number of satellites)
+// - timestamp: ISO8601 UTC string
+// - gps_id: device identifier string
+// - rsrq: float (signal quality - new)
+// - rsrp: float (signal power - new)
+// - latency: float (transmission latency - new)
+// - create_at: auto-generated by database (server-side)
 
 #endif // CONFIG_H
