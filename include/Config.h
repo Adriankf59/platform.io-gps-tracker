@@ -58,12 +58,13 @@
 // MOVEMENT DETECTION CONFIGURATION (NEW)
 // ========================================
 // Movement State Intervals
+// Movement State Intervals
 #define GPS_INTERVAL_MOVING 3000          // 3 seconds when moving
-#define GPS_INTERVAL_PARKED 15000         // 15 seconds when parked
-#define GPS_INTERVAL_STATIC 60000         // 60 seconds when static
+#define GPS_INTERVAL_PARKED 30000         // 30 seconds when parked (CHANGED from 15000)
+#define GPS_INTERVAL_STATIC 3600000       // 1 hour when static (CHANGED from 60000)
 
 // Movement Detection Thresholds
-#define MOVEMENT_SPEED_THRESHOLD 1.0      // 1 km/h threshold for movement
+#define MOVEMENT_SPEED_THRESHOLD 4.0      // 4 km/h threshold for movement (CHANGED from 1.0)
 #define PARKED_TO_STATIC_TIMEOUT 300000   // 5 minutes (300 seconds) to transition from PARKED to STATIC
 #define MOVEMENT_DETECTION_SAMPLES 2      // Number of samples for movement detection
 #define GPS_ACCURACY_THRESHOLD 5.0        // Minimum GPS accuracy required (meters)

@@ -660,13 +660,13 @@ void updateMovementState() {
   
   float currentSpeed = getCurrentSpeed();
   
-  // Determine movement state
+  // Determine movement state dengan threshold baru
   if (currentSpeed > MOVEMENT_SPEED_THRESHOLD) {
-    // Speed > 1 km/h = MOVING
+    // Speed > 4 km/h = MOVING
     currentMovementState = MOVEMENT_MOVING;
     vehicleStopTime = 0;
   } else {
-    // Speed <= 1 km/h
+    // Speed <= 4 km/h
     if (vehicleStopTime == 0) {
       // Just stopped
       vehicleStopTime = millis();
@@ -709,7 +709,7 @@ void logMovementStateChange(float speed) {
       break;
     case MOVEMENT_STATIC:
       LOG_INFO(MODULE_GPS, "🛑 Vehicle STATIC (stopped > 5 min)");
-      LOG_INFO(MODULE_GPS, "📡 GPS interval: %d seconds", GPS_INTERVAL_STATIC/1000);
+      LOG_INFO(MODULE_GPS, "📡 GPS interval: %d minutes", GPS_INTERVAL_STATIC/60000);
       break;
     default:
       break;
@@ -1696,9 +1696,9 @@ void printPowerModeInfo() {
   SerialMon.printf("Optimization : %s\n", config.aggressiveOptimization ? "Yes" : "No");
   
   SerialMon.println("\n=== MOVEMENT INTERVALS ===");
-  SerialMon.printf("MOVING       : %d seconds\n", GPS_INTERVAL_MOVING/1000);
-  SerialMon.printf("PARKED       : %d seconds\n", GPS_INTERVAL_PARKED/1000);
-  SerialMon.printf("STATIC       : %d seconds\n", GPS_INTERVAL_STATIC/1000);
+  SerialMon.printf("MOVING       : %d seconds (speed > %.1f km/h)\n", GPS_INTERVAL_MOVING/1000, float(MOVEMENT_SPEED_THRESHOLD));
+  SerialMon.printf("PARKED       : %d seconds (speed 0-%.1f km/h)\n", GPS_INTERVAL_PARKED/1000, float(MOVEMENT_SPEED_THRESHOLD));
+  SerialMon.printf("STATIC       : %d minutes (parked > 5 min)\n", GPS_INTERVAL_STATIC/60000);
   SerialMon.printf("Speed Thresh : %.1f km/h\n", float(MOVEMENT_SPEED_THRESHOLD));
   SerialMon.printf("Park→Static  : %d minutes\n", PARKED_TO_STATIC_TIMEOUT/60000);
   
