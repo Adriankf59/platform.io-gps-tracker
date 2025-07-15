@@ -1,15 +1,11 @@
-// Config.h - Optimized Configuration for Testing Realtime GPS
+// Config.h - Optimized Configuration with Health Monitoring and Auto-Recovery
 // 
 // TESTING MODE CHANGES:
-// 1. GPS interval: 2 seconds (FULL mode) for realtime testing
-// 2. Dynamic GPS: 1s moving, 3s static (was 1s/10s)
-// 3. Sleep mode: DISABLED (activity timeout 1 hour)
-// 4. Emergency mode: DISABLED (battery threshold 9V)
-// 5. WebSocket reconnect: 1 second (was 2s)
-// 6. Connection failures: 5 attempts (was 2)
-// 7. Latency target: 2000ms (was 1500ms)
-// 8. New commands: 'send', 'interval', 'nowait'
-// 9. Enhanced movement detection: MOVING/PARKED/STATIC states
+// 1. GPS interval: Updated movement detection (4 km/h threshold)
+// 2. Movement intervals: MOVING (3s), PARKED (30s), STATIC (1h)
+// 3. Health monitoring: Auto-restart, memory monitoring
+// 4. Auto-recovery: System health checks every 5 minutes
+// 5. Preventive restart: Every 72 hours
 //
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -55,19 +51,37 @@
 #define GPS_LOG_INTERVAL 5000          // Log GPS status every 5 seconds
 
 // ========================================
-// MOVEMENT DETECTION CONFIGURATION (NEW)
+// MOVEMENT DETECTION CONFIGURATION (UPDATED)
 // ========================================
-// Movement State Intervals
-// Movement State Intervals
+// Movement State Intervals (UPDATED for better efficiency)
 #define GPS_INTERVAL_MOVING 3000          // 3 seconds when moving
 #define GPS_INTERVAL_PARKED 30000         // 30 seconds when parked (CHANGED from 15000)
 #define GPS_INTERVAL_STATIC 3600000       // 1 hour when static (CHANGED from 60000)
 
-// Movement Detection Thresholds
+// Movement Detection Thresholds (UPDATED for noise reduction)
 #define MOVEMENT_SPEED_THRESHOLD 4.0      // 4 km/h threshold for movement (CHANGED from 1.0)
 #define PARKED_TO_STATIC_TIMEOUT 300000   // 5 minutes (300 seconds) to transition from PARKED to STATIC
 #define MOVEMENT_DETECTION_SAMPLES 2      // Number of samples for movement detection
 #define GPS_ACCURACY_THRESHOLD 5.0        // Minimum GPS accuracy required (meters)
+
+// ========================================
+// SYSTEM HEALTH MONITORING (NEW)
+// ========================================
+#define ENABLE_AUTO_RESTART true                    // Enable auto-restart
+#define AUTO_RESTART_INTERVAL 259200000             // 72 hours = 3 days (in milliseconds)
+#define MEMORY_CRITICAL_THRESHOLD 15000             // 15KB minimum memory
+#define MEMORY_WARNING_THRESHOLD 20000              // 20KB memory warning
+#define SUCCESS_RATE_THRESHOLD 10                   // 10% minimum success rate
+#define MAX_HEALTH_FAILURES 3                       // Max consecutive health failures
+#define HEALTH_CHECK_INTERVAL 300000                // Check system health every 5 minutes
+#define MEMORY_CHECK_INTERVAL 60000                 // Check memory every 1 minute
+#define NO_TRANSMISSION_TIMEOUT 1800000             // 30 minutes without successful transmission
+#define STUCK_STATE_TIMEOUT 600000                  // 10 minutes stuck in error state
+
+// Recovery Thresholds
+#define MAX_CONSECUTIVE_FAILURES 10                 // Max consecutive transmission failures
+#define MODEM_ERROR_TIMEOUT 300000                  // 5 minutes in modem error state
+#define WEBSOCKET_DISCONNECT_TIMEOUT 600000         // 10 minutes WebSocket disconnected
 
 // ========================================
 // IDENTIFIKASI PERANGKAT
@@ -223,6 +237,7 @@
 #define MODULE_SYS "SYS"                 // Modul sistem
 #define MODULE_WS "WEBSOCKET"            // Modul WebSocket
 #define MODULE_PERF "PERF"               // Modul performance monitoring
+#define MODULE_HEALTH "HEALTH"           // Modul system health monitoring
 
 // ========================================
 // FITUR OPSIONAL (TESTING MODE)
@@ -364,24 +379,19 @@
   sprintf(payload_buffer, MINIMAL_PAYLOAD_TEMPLATE, lat_str, lng_str)
 
 // ========================================
-// CATATAN PENGEMBANGAN (TESTING MODE)
+// CATATAN PENGEMBANGAN (UPDATED)
 // ========================================
-// 1. Sleep mode DISABLED untuk testing realtime
-// 2. Battery thresholds set sangat rendah (9V) untuk prevent emergency mode
-// 3. GPS interval dikurangi untuk testing (2 detik di FULL mode)
-// 4. Movement detection: MOVING (3s), PARKED (15s), STATIC (60s)
-// 5. WebSocket reconnect delay dikurangi ke 1 detik
-// 6. Activity timeout dinaikkan ke 1 jam
-// 7. Connection failure threshold dinaikkan untuk testing
-// 8. Latency target relaxed ke 2000ms untuk testing
-// 9. Manual speed testing enabled untuk simulasi movement
+// 1. Health monitoring: Auto-restart after 72 hours, memory monitoring
+// 2. Movement detection: 4 km/h threshold, 30s parked, 1h static intervals
+// 3. Auto-recovery: System health checks, stuck state detection
+// 4. Performance optimization: Better error handling, connection recovery
+// 5. Memory management: Critical threshold monitoring, leak prevention
 // 
-// Target untuk testing:
-// - Realtime tracking dengan interval 1-3 detik (moving)
-// - Smart interval adjustment based on movement state
-// - No sleep interruptions
-// - Fast recovery dari disconnections
-// - Verbose logging untuk debugging
-// - Manual speed input untuk testing tanpa perlu bergerak
+// Target untuk production:
+// - Reliable 24/7 operation dengan auto-recovery
+// - Efficient power usage dengan smart intervals
+// - Robust error handling dan automatic restart
+// - Memory leak prevention dan health monitoring
+// - Preventive maintenance dengan scheduled restart
 
 #endif // CONFIG_H

@@ -1,4 +1,4 @@
-// WebSocketManager.h - Manajer WebSocket untuk Real-time Communication (Optimized for Low Latency)
+// WebSocketManager.h - Enhanced WebSocket Manager with Auto-Recovery (FIXED)
 #ifndef WEBSOCKET_MANAGER_H
 #define WEBSOCKET_MANAGER_H
 
@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "Config.h"
 #include "Logger.h"
+#include "Utils.h"  // Added Utils.h for safeDelay
 
 // WebSocket buffer size constant (optimized)
 #define WS_MAX_MESSAGE_SIZE 2048  // Reduced from 4096 for faster processing
@@ -35,6 +36,12 @@ struct WSStats {
   unsigned long latencySamples;
   unsigned long lastTransmissionStart;
   bool measuringLatency;
+  
+  // Health metrics (NEW)
+  unsigned long lastSuccessfulTransmission;
+  unsigned long consecutiveFailures;
+  unsigned long totalConnectionTime;
+  unsigned long longestConnection;
 };
 
 // Performance tracking
@@ -88,6 +95,14 @@ struct LatencyTracker {
     }
     return max_val;
   }
+  
+  void reset() {
+    initialized = false;
+    currentIndex = 0;
+    sampleCount = 0;
+    totalLatency = 0;
+    memset(samples, 0, sizeof(samples));
+  }
 };
 
 // Implementasi WebSocket Client Sederhana (Optimized)
@@ -109,6 +124,7 @@ private:
   String generateWebSocketKey() {
     // Generate random 16-byte key dan encode ke base64
     String key = "";
+    key.reserve(24); // Pre-allocate for performance
     for(int i = 0; i < 22; i++) {
       key += char(random(65, 90)); // Simple random key
     }
@@ -119,6 +135,11 @@ private:
     wsKey = generateWebSocketKey();
     
     LOG_DEBUG(MODULE_WS, "Memulai WebSocket handshake...");
+    
+    // Clear any pending data first
+    while (client->available()) {
+      client->read();
+    }
     
     // Kirim WebSocket upgrade request (optimized headers)
     client->print("GET ");
@@ -132,7 +153,7 @@ private:
     client->println(wsKey);
     client->println("Sec-WebSocket-Version: 13");
     client->println("Origin: http://esp32-tracker");
-    client->println("User-Agent: ESP32-GPS-Tracker/2.0");
+    client->println("User-Agent: ESP32-GPS-Tracker/2.1");
     
     // Optimize for low latency
     if (TCP_NODELAY) {
@@ -140,6 +161,7 @@ private:
     }
     
     client->println();
+    client->flush(); // Ensure data is sent
     
     // Tunggu response dengan reduced timeout
     unsigned long timeout = millis() + WS_CONNECT_TIMEOUT;
@@ -148,7 +170,7 @@ private:
         LOG_ERROR(MODULE_WS, "Handshake timeout");
         return false;
       }
-      delay(5); // Reduced delay for faster response
+      Utils::safeDelay(10); // FIXED: Use Utils::safeDelay instead of delay
     }
     
     // Baca response headers dengan faster timeout
@@ -215,6 +237,8 @@ private:
       client->write(payloadData[i] ^ mask[i % 4]);
     }
     
+    client->flush(); // Ensure data is sent
+    
     LOG_TRACE(MODULE_WS, "Frame dikirim: opcode=0x%X, len=%d", opcode, len);
   }
   
@@ -264,14 +288,16 @@ public:
       LOG_INFO(MODULE_WS, "Memutuskan koneksi WebSocket...");
       // Kirim close frame
       sendFrame(WS_OPCODE_CLOSE, "");
-      delay(50); // Reduced delay
+      Utils::safeDelay(100); // FIXED: Use Utils::safeDelay instead of delay
       connected = false;
     }
-    client->stop();
+    if (client && client->connected()) {
+      client->stop();
+    }
   }
   
   bool isConnected() {
-    return connected && client->connected();
+    return connected && client && client->connected();
   }
   
   void sendText(const String& text) {
@@ -284,7 +310,7 @@ public:
   }
   
   bool readMessage(String& message, unsigned long& bytesReceived) {
-    if (!client->available()) return false;
+    if (!client || !client->available()) return false;
     
     // Baca frame header
     uint8_t header = client->read();
@@ -321,7 +347,7 @@ public:
         message += (char)client->read();
       } else {
         // Tunggu data dengan reduced delay
-        delay(5);
+        Utils::safeDelay(10); // FIXED: Use Utils::safeDelay instead of delay
         if (client->available()) {
           message += (char)client->read();
         } else {
@@ -363,7 +389,7 @@ public:
   }
 };
 
-// WebSocket Manager Class (Optimized)
+// WebSocket Manager Class (Enhanced with Auto-Recovery)
 class WebSocketManager {
 private:
   SimpleWebSocketClient* wsClient;
@@ -374,9 +400,16 @@ private:
   unsigned long lastReconnectAttempt = 0;
   int reconnectAttempts = 0;
   
-  // Statistik dengan performance tracking
-  WSStats stats = {0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, false};
+  // Statistik dengan performance tracking (ENHANCED)
+  WSStats stats = {0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, false, 0, 0, 0, 0};
   LatencyTracker latencyTracker = {{0}, 0, 0, 0, false};
+  
+  // Health monitoring (NEW)
+  unsigned long connectionStartTime = 0;
+  unsigned long lastHealthCheck = 0;
+  int consecutiveHealthFailures = 0;
+  bool forceRestart = false;
+  unsigned long restartDelayTimer = 0; // ADDED: Timer for restart delay
   
   // Callbacks
   void (*onRelayUpdateCallback)(bool newState) = nullptr;
@@ -385,7 +418,7 @@ private:
   const char* wsUrl = WS_URL;
   const unsigned long PING_INTERVAL = WS_PING_INTERVAL;
   const unsigned long RECONNECT_BASE_DELAY = WS_RECONNECT_DELAY;
-  const int MAX_RECONNECT_ATTEMPTS = 8; // Reduced from 10
+  const int MAX_RECONNECT_ATTEMPTS = 15; // Increased from 8
   
   // Subscription management
   bool vehicleSubscribed = false;
@@ -599,13 +632,11 @@ private:
         processVehicleItem(item);
       }
     } else if (data.is<JsonObject>()) {
-      // FIX: Buat variabel lokal untuk menghindari binding error
       JsonObject obj = data.as<JsonObject>();
       processVehicleItem(obj);
     }
   }
   
-  // FIX: Ubah parameter menjadi const reference
   void processVehicleItem(const JsonObject& item) {
     String gpsId = item["gps_id"] | "";
     if (gpsId == GPS_ID) {
@@ -626,7 +657,7 @@ private:
     }
   }
   
-  // Format timestamp untuk server (ISO8601) - FIXED
+  // Format timestamp untuk server (ISO8601)
   String formatTimestamp(unsigned long unixTime) {
     time_t rawTime = unixTime;
     struct tm *timeInfo = gmtime(&rawTime);
@@ -643,6 +674,59 @@ private:
     return String(timestamp);
   }
   
+  // Health monitoring methods (NEW)
+  void performHealthCheck() {
+    if (millis() - lastHealthCheck < HEALTH_CHECK_INTERVAL) {
+      return;
+    }
+    
+    lastHealthCheck = millis();
+    bool healthIssue = false;
+    
+    // Check 1: Connection stuck in disconnected state for too long
+    if (state == WS_DISCONNECTED && millis() > WEBSOCKET_DISCONNECT_TIMEOUT) {
+      LOG_WARN(MODULE_HEALTH, "⚠️ WebSocket stuck disconnected for %lu ms", 
+               millis() - (stats.connectionTime > 0 ? stats.connectionTime : 0));
+      healthIssue = true;
+    }
+    
+    // Check 2: Too many consecutive failures
+    if (stats.consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
+      LOG_WARN(MODULE_HEALTH, "⚠️ Too many consecutive failures: %lu", stats.consecutiveFailures);
+      healthIssue = true;
+    }
+    
+    // Check 3: No successful transmission for too long
+    if (stats.lastSuccessfulTransmission > 0 && 
+        millis() - stats.lastSuccessfulTransmission > NO_TRANSMISSION_TIMEOUT) {
+      LOG_WARN(MODULE_HEALTH, "⚠️ No successful transmission for %lu ms", 
+               millis() - stats.lastSuccessfulTransmission);
+      healthIssue = true;
+    }
+    
+    // Check 4: High reconnection rate
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS / 2 && 
+        millis() - connectionStartTime < 300000) { // Within 5 minutes
+      LOG_WARN(MODULE_HEALTH, "⚠️ High reconnection rate: %d attempts in %lu ms", 
+               reconnectAttempts, millis() - connectionStartTime);
+      healthIssue = true;
+    }
+    
+    if (healthIssue) {
+      consecutiveHealthFailures++;
+      LOG_WARN(MODULE_HEALTH, "🏥 WebSocket health failures: %d/%d", 
+               consecutiveHealthFailures, MAX_HEALTH_FAILURES);
+      
+      if (consecutiveHealthFailures >= MAX_HEALTH_FAILURES) {
+        LOG_ERROR(MODULE_HEALTH, "🚨 WebSocket health critical, forcing system restart");
+        forceRestart = true;
+        restartDelayTimer = millis(); // Start delay timer
+      }
+    } else {
+      consecutiveHealthFailures = 0;
+    }
+  }
+  
 public:
   WebSocketManager(TinyGsmClient* client) : gsmClient(client) {
     wsClient = new SimpleWebSocketClient(client);
@@ -653,16 +737,21 @@ public:
   }
   
   void begin() {
-    LOG_INFO(MODULE_WS, "WebSocket Manager diinisialisasi");
+    LOG_INFO(MODULE_WS, "WebSocket Manager diinisialisasi dengan health monitoring");
     LOG_INFO(MODULE_WS, "Target: %s", wsUrl);
     LOG_INFO(MODULE_WS, "Ping Interval: %lu ms", PING_INTERVAL);
     LOG_INFO(MODULE_WS, "Max Payload Size: %d bytes", MAX_PAYLOAD_SIZE);
+    LOG_INFO(MODULE_WS, "Health Check Interval: %lu ms", HEALTH_CHECK_INTERVAL);
     
     // Initialize performance tracking
     if (ENABLE_LATENCY_MONITORING) {
       LOG_INFO(MODULE_WS, "Performance monitoring enabled");
       latencyTracker.initialized = false;
     }
+    
+    // Reset stats
+    memset(&stats, 0, sizeof(stats));
+    stats.minLatency = UINT32_MAX;
   }
   
   void setOnRelayUpdate(void (*callback)(bool)) {
@@ -678,6 +767,7 @@ public:
     
     LOG_INFO(MODULE_WS, "🔌 Mencoba koneksi WebSocket...");
     state = WS_CONNECTING;
+    connectionStartTime = millis();
     
     if (wsClient->connect(wsUrl)) {
       LOG_INFO(MODULE_WS, "✅ WebSocket terhubung");
@@ -686,6 +776,7 @@ public:
       lastPingTime = millis();
       reconnectAttempts = 0;
       vehicleSubscribed = false;
+      stats.consecutiveFailures = 0; // Reset failure count on successful connection
       
       // Subscribe segera
       subscribeToVehicle();
@@ -696,12 +787,23 @@ public:
     LOG_ERROR(MODULE_WS, "❌ Koneksi WebSocket gagal");
     state = WS_DISCONNECTED;
     stats.reconnectCount++;
+    stats.consecutiveFailures++;
     return false;
   }
   
   void disconnect() {
     if (state != WS_DISCONNECTED) {
       LOG_INFO(MODULE_WS, "🔌 Memutuskan WebSocket...");
+      
+      // Update connection time stats
+      if (stats.connectionTime > 0) {
+        unsigned long connectionDuration = millis() - stats.connectionTime;
+        stats.totalConnectionTime += connectionDuration;
+        if (connectionDuration > stats.longestConnection) {
+          stats.longestConnection = connectionDuration;
+        }
+      }
+      
       wsClient->disconnect();
       state = WS_DISCONNECTED;
       vehicleSubscribed = false;
@@ -726,11 +828,23 @@ public:
   }
   
   void update() {
+    // Perform health checks
+    performHealthCheck();
+    
+    // Check if force restart is needed with delay
+    if (forceRestart && restartDelayTimer > 0) {
+      if (millis() - restartDelayTimer >= 2000) { // 2 second delay
+        LOG_ERROR(MODULE_WS, "🚨 WebSocket forcing system restart due to health issues");
+        ESP.restart();
+      }
+      return; // Don't process other updates during restart sequence
+    }
+    
     if (state == WS_DISCONNECTED) {
-      // Handle reconnection dengan reduced exponential backoff
+      // Handle reconnection dengan improved exponential backoff
       unsigned long now = millis();
-      unsigned long delay = RECONNECT_BASE_DELAY * (1 << min(reconnectAttempts, 4)); // Reduced from 5
-      delay = min(delay, 30000UL); // Reduced max from 60s to 30s
+      unsigned long delay = RECONNECT_BASE_DELAY * (1 << min(reconnectAttempts, 4));
+      delay = min(delay, 30000UL); // Max 30 seconds
       
       if (now - lastReconnectAttempt >= delay) {
         LOG_INFO(MODULE_WS, "🔄 Percobaan reconnect #%d (delay: %lu ms)", 
@@ -738,9 +852,12 @@ public:
         lastReconnectAttempt = now;
         reconnectAttempts++;
         
+        // ENHANCED: Auto-restart after too many failures instead of getting stuck
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-          LOG_ERROR(MODULE_WS, "❌ Max reconnect attempts reached, perlu reset manual");
-          reconnectAttempts = MAX_RECONNECT_ATTEMPTS; // Cap it
+          LOG_ERROR(MODULE_WS, "🚨 Max reconnect attempts reached (%d), forcing system restart", 
+                    MAX_RECONNECT_ATTEMPTS);
+          forceRestart = true;
+          restartDelayTimer = millis(); // Start delay timer
         } else {
           connect();
         }
@@ -752,6 +869,7 @@ public:
       LOG_WARN(MODULE_WS, "⚠️ Koneksi WebSocket terputus");
       state = WS_DISCONNECTED;
       vehicleSubscribed = false;
+      stats.consecutiveFailures++;
       return;
     }
     
@@ -783,6 +901,7 @@ public:
                        const String& timestamp, float battery = 12.5) {
     if (!isReady()) {
       LOG_WARN(MODULE_WS, "⚠️ Tidak siap mengirim data (state: %s)", getStateString());
+      stats.consecutiveFailures++;
       return false;
     }
     
@@ -867,54 +986,14 @@ public:
     }
     
     LOG_DEBUG(MODULE_WS, "📤 Mengirim: %s", message.c_str());
+    
+    // Send message
     wsClient->sendText(message);
     
     stats.totalBytesSent += message.length();
     stats.totalMessages++;
-    
-    return true;
-  }
-  
-  // OPTIMIZED: Alternative compact send method
-  bool sendVehicleDataCompact(float lat, float lon, float speed, int satellites, 
-                             unsigned long unixTimestamp, float battery = 12.5) {
-    if (!isReady()) {
-      LOG_WARN(MODULE_WS, "⚠️ Tidak siap mengirim data (state: %s)", getStateString());
-      return false;
-    }
-    
-    // Start latency measurement
-    if (ENABLE_LATENCY_MONITORING) {
-      stats.lastTransmissionStart = millis();
-      stats.measuringLatency = true;
-    }
-    
-    // Format timestamp in ISO8601 format
-    String timestamp = formatTimestamp(unixTimestamp);
-    
-    // Create ultra-compact JSON manually (faster than ArduinoJSON for small payloads)
-    char latStr[12], lngStr[12];
-    snprintf(latStr, sizeof(latStr), "%.5f", lat);
-    snprintf(lngStr, sizeof(lngStr), "%.5f", lon);
-    
-    // Ultra-compact format
-    snprintf(payloadBuffer, sizeof(payloadBuffer),
-      "{\"type\":\"items\",\"collection\":\"vehicle_datas\",\"action\":\"create\","
-      "\"data\":{\"latitude\":\"%s\",\"longitude\":\"%s\",\"speed\":%d,"
-      "\"satellites_used\":%d,\"timestamp\":\"%s\",\"gps_id\":\"" GPS_ID "\"}}",
-      latStr, lngStr, (int)speed, satellites, timestamp.c_str()
-    );
-    
-    String message = String(payloadBuffer);
-    
-    if (DEBUG_PAYLOAD_SIZE) {
-      LOG_DEBUG(MODULE_WS, "📤 Compact payload: %d bytes", message.length());
-    }
-    
-    wsClient->sendText(message);
-    
-    stats.totalBytesSent += message.length();
-    stats.totalMessages++;
+    stats.lastSuccessfulTransmission = millis(); // Update successful transmission time
+    stats.consecutiveFailures = 0; // Reset failure count on success
     
     return true;
   }
@@ -976,6 +1055,12 @@ public:
     report += "Bytes Sent: " + String(stats.totalBytesSent) + " (" + String(stats.totalBytesSent/1024) + " KB)\n";
     report += "Bytes Received: " + String(stats.totalBytesReceived) + " (" + String(stats.totalBytesReceived/1024) + " KB)\n";
     report += "Reconnect Count: " + String(stats.reconnectCount) + "\n";
+    report += "Consecutive Failures: " + String(stats.consecutiveFailures) + "\n";
+    
+    if (stats.totalConnectionTime > 0) {
+      report += "Total Connection Time: " + Utils::formatUptime(stats.totalConnectionTime) + "\n";
+      report += "Longest Connection: " + Utils::formatUptime(stats.longestConnection) + "\n";
+    }
     
     if (ENABLE_LATENCY_MONITORING && stats.latencySamples > 0) {
       report += "Latency Samples: " + String(stats.latencySamples) + "\n";
@@ -996,7 +1081,8 @@ public:
   void resetPerformanceStats() {
     memset(&stats, 0, sizeof(stats));
     stats.minLatency = UINT32_MAX;
-    latencyTracker.initialized = false;
+    latencyTracker.reset();
+    consecutiveHealthFailures = 0;
     LOG_INFO(MODULE_PERF, "Performance statistics reset");
   }
   
@@ -1025,6 +1111,7 @@ public:
         // TCP connection lost
         state = WS_DISCONNECTED;
         vehicleSubscribed = false;
+        stats.consecutiveFailures++;
       } else if (state == WS_CONNECTED && !vehicleSubscribed) {
         // WebSocket connected but not subscribed
         subscribeToVehicle();
@@ -1066,7 +1153,11 @@ public:
   
   void resetReconnectAttempts() {
     reconnectAttempts = 0;
-    LOG_INFO(MODULE_WS, "Reconnect attempts direset");
+    stats.consecutiveFailures = 0;
+    consecutiveHealthFailures = 0;
+    forceRestart = false;
+    restartDelayTimer = 0;
+    LOG_INFO(MODULE_WS, "Reconnect attempts dan health failures direset");
   }
   
   // Diagnostic methods
@@ -1077,12 +1168,40 @@ public:
     return getAverageLatency() <= MAX_ACCEPTABLE_LATENCY;
   }
   
+  bool isHealthy() {
+    // Check various health indicators
+    if (stats.consecutiveFailures > MAX_CONSECUTIVE_FAILURES / 2) return false;
+    if (consecutiveHealthFailures > 0) return false;
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS / 2) return false;
+    
+    // Check if stuck in disconnected state for too long
+    if (state == WS_DISCONNECTED && millis() > WEBSOCKET_DISCONNECT_TIMEOUT) {
+      return false;
+    }
+    
+    return true;
+  }
+  
   int getPayloadMode() {
     return DEFAULT_PAYLOAD_MODE;
   }
   
   size_t getLastPayloadSize() {
     return strlen(payloadBuffer);
+  }
+  
+  // Get health status
+  String getHealthStatus() {
+    String status = "WebSocket Health: ";
+    if (isHealthy()) {
+      status += "✅ HEALTHY";
+    } else {
+      status += "⚠️ ISSUES DETECTED";
+      status += " (Failures: " + String(stats.consecutiveFailures);
+      status += ", Health Fails: " + String(consecutiveHealthFailures);
+      status += ", Reconnects: " + String(reconnectAttempts) + ")";
+    }
+    return status;
   }
   
   // Force immediate ping for testing
@@ -1092,42 +1211,17 @@ public:
       LOG_INFO(MODULE_WS, "🏓 Force ping sent");
     }
   }
+  
+  // Get connection uptime
+  unsigned long getConnectionUptime() {
+    if (stats.connectionTime == 0) return 0;
+    return millis() - stats.connectionTime;
+  }
+  
+  // Check if should force restart
+  bool shouldForceRestart() {
+    return forceRestart && restartDelayTimer > 0 && (millis() - restartDelayTimer >= 2000);
+  }
 };
 
 #endif // WEBSOCKET_MANAGER_H
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -1,17 +1,20 @@
 // ========================================
-// Main.cpp - Sistem GPS Tracker dengan Performance Optimization
+// Main.cpp - Sistem GPS Tracker dengan Performance Optimization + Auto Recovery
 // ========================================
 
 /**
- * ESP32 Vehicle GPS Tracking dengan Low Latency Optimization
+ * ESP32 Vehicle GPS Tracking dengan Low Latency Optimization & Auto Recovery
  * - Performance monitoring terintegrasi
  * - Network optimization otomatis
  * - Adaptive transmission intervals
  * - Fast error recovery
  * - Movement state detection (MOVING/PARKED/STATIC)
+ * - AUTO-RECOVERY SYSTEM untuk mencegah hang/stuck
+ * - Memory leak detection dan prevention
+ * - Health monitoring dengan auto-restart
  * 
- * Versi: 7.0 - Enhanced Movement Detection with Manual Speed Testing
- * Update: Fixed all function declarations and implementations
+ * Versi: 7.1 - Enhanced Movement Detection with Auto-Recovery System
+ * Update: Added comprehensive auto-recovery mechanisms
  */
 
 // ----- FRAMEWORK ARDUINO -----
@@ -70,11 +73,19 @@ enum MovementState {
   MOVEMENT_MOVING     // Kendaraan bergerak
 };
 
-// ----- MOVEMENT INTERVALS (NEW) -----
-#define GPS_INTERVAL_MOVING 3000          // 3 detik saat bergerak
-#define GPS_INTERVAL_PARKED 15000         // 15 detik saat parkir
-#define GPS_INTERVAL_STATIC 60000         // 60 detik saat diam
+// ----- MOVEMENT INTERVALS (Use Config.h values) -----
+// GPS_INTERVAL_MOVING, GPS_INTERVAL_PARKED, GPS_INTERVAL_STATIC already defined in Config.h
 #define PARKED_TO_STATIC_TIMEOUT 300000   // 5 menit threshold parkir ke diam
+
+// ----- AUTO-RECOVERY CONSTANTS -----
+#define ENABLE_AUTO_RESTART true                    // Enable auto-restart
+#define AUTO_RESTART_INTERVAL 259200000              // 72 hours = 3 days
+#define MEMORY_CRITICAL_THRESHOLD 15000             // 15KB minimum memory
+#define SUCCESS_RATE_THRESHOLD 10                   // 10% minimum success rate
+#define MAX_HEALTH_FAILURES 3                       // Max consecutive health failures
+#define NO_SUCCESS_TIMEOUT 1800000                  // 30 minutes no success = restart
+#define MEMORY_CHECK_INTERVAL 60000                 // Check memory every 1 minute
+#define HEALTH_CHECK_INTERVAL 300000                // Health check every 5 minutes
 
 // ========================================
 // STRUKTUR DATA
@@ -189,6 +200,13 @@ unsigned long lastMaintenanceCheck = 0;
 unsigned long lastPerformanceOptimization = 0;
 unsigned long vehicleStopTime = 0;          // NEW: Track when vehicle stopped
 
+// AUTO-RECOVERY Variables
+unsigned long lastSuccessfulTransmission = 0;
+unsigned long lastMemoryCheck = 0;
+unsigned long lastHealthCheck = 0;
+unsigned long systemStartTime = 0;
+int consecutiveHealthFailures = 0;
+
 // Control Variables
 bool relayState = true;
 bool waitForSubscription = true;
@@ -212,6 +230,13 @@ void handleSleepPrepareState();
 void handleOptimizingState();
 void executeStateMachine();
 
+// AUTO-RECOVERY Functions
+void performSystemHealthCheck();
+void checkAutoRestart();
+void checkMemoryHealth();
+void checkSuccessRate();
+void forceSystemRestart(const char* reason);
+
 // Serial Command Handlers
 void handleSerialCommands();
 void processSpeedCommand(const String& cmd);
@@ -228,6 +253,7 @@ void printMovementInfo();
 void showSpeedInfo();
 void showBatteryInfo();
 void showGpsDetails();
+void printHealthStatus();
 
 // Data Transmission
 bool sendVehicleDataViaWebSocket();
@@ -297,14 +323,15 @@ void setup() {
     Logger::init(&SerialMon, LOG_INFO);
   #endif
   
-  LOG_INFO(MODULE_MAIN, "=== ESP32 GPS Tracker v7.0 ===");
-  LOG_INFO(MODULE_MAIN, "Enhanced Movement Detection with Manual Speed Testing");
+  LOG_INFO(MODULE_MAIN, "=== ESP32 GPS Tracker v7.1 ===");
+  LOG_INFO(MODULE_MAIN, "Enhanced Movement Detection with Auto-Recovery System");
   LOG_INFO(MODULE_MAIN, "Device ID: %s", GPS_ID);
   LOG_INFO(MODULE_MAIN, "Compiled: %s %s", __DATE__, __TIME__);
   
   // Initialize system flags
   systemFlags.reset();
   performanceMetrics.reset();
+  systemStartTime = millis();
   
   // Initialize hardware
   pinMode(RELAY_PIN, OUTPUT);
@@ -341,9 +368,18 @@ void setup() {
   printHelp();
   Utils::printMemoryInfo();
   
+  // AUTO-RECOVERY: Log system capabilities
+  #if ENABLE_AUTO_RESTART
+    LOG_INFO(MODULE_SYS, "🛡️ Auto-recovery: ENABLED");
+    LOG_INFO(MODULE_SYS, "🔄 Auto-restart: every 72 hours");
+    LOG_INFO(MODULE_SYS, "💾 Memory threshold: %d KB", MEMORY_CRITICAL_THRESHOLD/1024);
+    LOG_INFO(MODULE_SYS, "📊 Min success rate: %d%%", SUCCESS_RATE_THRESHOLD);
+  #endif
+  
   // Set initial state
   currentState = STATE_WAIT_GPS;
   lastActivityTime = millis();
+  lastSuccessfulTransmission = millis();
   
   LOG_INFO(MODULE_MAIN, "Setup complete, waiting for GPS fix...");
 }
@@ -356,6 +392,11 @@ void loop() {
   Utils::feedWatchdog();
   updateBatteryStatus();
   checkEmergencyMode();
+  
+  // AUTO-RECOVERY CHECKS (PRIORITY)
+  checkAutoRestart();
+  checkMemoryHealth();
+  performSystemHealthCheck();
   
   // Always update GPS
   gpsManager.update();
@@ -393,6 +434,101 @@ void loop() {
   executeStateMachine();
   
   delay(5); // Small delay for stability
+}
+
+// ========================================
+// AUTO-RECOVERY SYSTEM
+// ========================================
+
+void checkAutoRestart() {
+  #if ENABLE_AUTO_RESTART
+    // Auto-restart setiap 3 hari untuk preventive maintenance
+    if (millis() - systemStartTime > AUTO_RESTART_INTERVAL) {
+      forceSystemRestart("Scheduled restart after 72 hours uptime");
+    }
+  #endif
+}
+
+void checkMemoryHealth() {
+  // MEMORY MONITOR: Check setiap 1 menit
+  if (millis() - lastMemoryCheck > MEMORY_CHECK_INTERVAL) {
+    uint32_t freeHeap = Utils::getFreeHeap();
+    if (freeHeap < MEMORY_CRITICAL_THRESHOLD) {
+      LOG_ERROR(MODULE_SYS, "🚨 Critical memory low: %u bytes", freeHeap);
+      forceSystemRestart("Critical memory shortage");
+    }
+    lastMemoryCheck = millis();
+  }
+}
+
+void performSystemHealthCheck() {
+  if (millis() - lastHealthCheck < HEALTH_CHECK_INTERVAL) {
+    return; // Check setiap 5 menit
+  }
+  
+  lastHealthCheck = millis();
+  bool systemHealthy = true;
+  
+  // Check 1: Memory
+  if (Utils::getFreeHeap() < 20000) {
+    LOG_WARN(MODULE_SYS, "⚠️ Health: Low memory");
+    systemHealthy = false;
+  }
+  
+  // Check 2: Success rate
+  if (performanceMetrics.totalTransmissions > 10) {
+    unsigned long successRate = (performanceMetrics.successfulTransmissions * 100) / 
+                               performanceMetrics.totalTransmissions;
+    if (successRate < SUCCESS_RATE_THRESHOLD) {
+      LOG_WARN(MODULE_SYS, "⚠️ Health: Low success rate: %lu%%", successRate);
+      systemHealthy = false;
+    }
+  }
+  
+  // Check 3: No successful transmission dalam 30 menit
+  if (performanceMetrics.totalTransmissions > 0) {
+    if (performanceMetrics.successfulTransmissions > 0) {
+      lastSuccessfulTransmission = millis();
+    } else if (millis() - lastSuccessfulTransmission > NO_SUCCESS_TIMEOUT) {
+      LOG_ERROR(MODULE_SYS, "🚨 No successful transmission in 30 min");
+      forceSystemRestart("No successful transmission timeout");
+      return;
+    }
+  }
+  
+  // Check 4: Modem stuck in error state
+  if (modemManager.getStatus() == MODEM_STATUS_ERROR) {
+    LOG_WARN(MODULE_SYS, "⚠️ Health: Modem in error state");
+    systemHealthy = false;
+  }
+  
+  // Check 5: WebSocket stuck
+  if (powerConfigs[currentPowerMode].wsContinuous && 
+      wsManager.getState() == WS_DISCONNECTED && 
+      millis() > 600000) { // After 10 minutes uptime
+    LOG_WARN(MODULE_SYS, "⚠️ Health: WebSocket stuck disconnected");
+    systemHealthy = false;
+  }
+  
+  if (!systemHealthy) {
+    consecutiveHealthFailures++;
+    LOG_WARN(MODULE_SYS, "🏥 System health failures: %d/%d", 
+             consecutiveHealthFailures, MAX_HEALTH_FAILURES);
+    
+    if (consecutiveHealthFailures >= MAX_HEALTH_FAILURES) {
+      forceSystemRestart("System health critical");
+    }
+  } else {
+    consecutiveHealthFailures = 0;
+  }
+}
+
+void forceSystemRestart(const char* reason) {
+  LOG_ERROR(MODULE_SYS, "🚨 FORCED RESTART: %s", reason);
+  Utils::printMemoryInfo();
+  printPerformanceReport();
+  delay(2000);
+  ESP.restart();
 }
 
 // ========================================
@@ -517,6 +653,16 @@ void handleInitState() {
 
 void handleOperationalState() {
   unsigned long currentTime = millis();
+  
+  // AUTO-RECOVERY: Jika tidak ada transmisi sukses >30 menit, restart
+  if (performanceMetrics.totalTransmissions > 0) {
+    if (performanceMetrics.successfulTransmissions > 0) {
+      lastSuccessfulTransmission = currentTime;
+    } else if (currentTime - lastSuccessfulTransmission > NO_SUCCESS_TIMEOUT) {
+      forceSystemRestart("No successful transmission in 30 min");
+      return;
+    }
+  }
   
   // Check if GPS became ready
   checkGpsReady();
@@ -1051,6 +1197,13 @@ void handleSerialCommands() {
     delay(1000);
     ESP.restart();
   }
+  // Health and recovery commands
+  else if (cmd == "health") {
+    printHealthStatus();
+  } else if (cmd == "recovery") {
+    LOG_INFO(MODULE_MAIN, "🔄 Forcing system health check...");
+    performSystemHealthCheck();
+  }
   // Power mode commands
   else if (cmd == "full") {
     setPowerMode(POWER_MODE_FULL);
@@ -1181,6 +1334,10 @@ void processTestingCommand(const String& cmd) {
     vehicleStopTime = 0;
     LOG_INFO(MODULE_MAIN, "Test variables reset");
     updateMovementState();
+  } else if (cmd == "testcrash") {
+    // Test auto-recovery by simulating crash
+    LOG_WARN(MODULE_MAIN, "🧪 Simulating system crash for recovery test...");
+    forceSystemRestart("Manual crash test");
   }
 }
 
@@ -1266,6 +1423,41 @@ void showGpsDetails() {
     unsigned long ttff = (systemFlags.gpsFirstFixTime - systemFlags.systemStartTime) / 1000;
     LOG_INFO(MODULE_MAIN, "First Fix    : %lu seconds", ttff);
   }
+}
+
+void printHealthStatus() {
+  LOG_INFO(MODULE_MAIN, "=== SYSTEM HEALTH STATUS ===");
+  LOG_INFO(MODULE_MAIN, "Free Memory    : %u KB", Utils::getFreeHeap() / 1024);
+  LOG_INFO(MODULE_MAIN, "Memory Status  : %s", 
+           Utils::getFreeHeap() > MEMORY_CRITICAL_THRESHOLD ? "OK" : "CRITICAL");
+  
+  if (performanceMetrics.totalTransmissions > 0) {
+    unsigned long successRate = (performanceMetrics.successfulTransmissions * 100) / 
+                               performanceMetrics.totalTransmissions;
+    LOG_INFO(MODULE_MAIN, "Success Rate   : %lu%% (%lu/%lu)", 
+             successRate, performanceMetrics.successfulTransmissions, 
+             performanceMetrics.totalTransmissions);
+    LOG_INFO(MODULE_MAIN, "Rate Status    : %s", 
+             successRate >= SUCCESS_RATE_THRESHOLD ? "OK" : "LOW");
+  }
+  
+  unsigned long uptime = millis() - systemStartTime;
+  LOG_INFO(MODULE_MAIN, "Uptime         : %s", Utils::formatUptime(uptime).c_str());
+  LOG_INFO(MODULE_MAIN, "Health Failures: %d/%d", consecutiveHealthFailures, MAX_HEALTH_FAILURES);
+  LOG_INFO(MODULE_MAIN, "Overall Health : %s", 
+           consecutiveHealthFailures < MAX_HEALTH_FAILURES ? "HEALTHY" : "CRITICAL");
+  
+  // Last successful transmission
+  if (performanceMetrics.successfulTransmissions > 0) {
+    unsigned long timeSinceSuccess = (millis() - lastSuccessfulTransmission) / 1000;
+    LOG_INFO(MODULE_MAIN, "Last Success   : %lu seconds ago", timeSinceSuccess);
+  }
+  
+  // Auto-restart info
+  #if ENABLE_AUTO_RESTART
+    unsigned long timeToRestart = (AUTO_RESTART_INTERVAL - (millis() - systemStartTime)) / 1000;
+    LOG_INFO(MODULE_MAIN, "Auto-restart   : %lu seconds remaining", timeToRestart);
+  #endif
 }
 
 // ========================================
@@ -1519,6 +1711,8 @@ void printHelp() {
   SerialMon.println("status       - Show system status");
   SerialMon.println("init         - Show initialization status");
   SerialMon.println("reset        - Restart system");
+  SerialMon.println("health       - Show health status");
+  SerialMon.println("recovery     - Force health check");
   
   SerialMon.println("\n=== POWER MODES ===");
   SerialMon.println("power        - Show current power mode");
@@ -1537,6 +1731,7 @@ void printHelp() {
   SerialMon.println("teststop     - Test PARKED→STATIC transition");
   SerialMon.println("testmove     - Test all movement modes");
   SerialMon.println("testreset    - Reset test variables");
+  SerialMon.println("testcrash    - Test auto-recovery system");
   
   SerialMon.println("\n=== NETWORK & OPTIMIZATION ===");
   SerialMon.println("network      - Show network info");
@@ -1643,8 +1838,20 @@ void printStatus() {
                       performanceMetrics.totalTransmissions));
   }
   
+  // Health status
+  SerialMon.printf("Health       : %s", 
+                   consecutiveHealthFailures < MAX_HEALTH_FAILURES ? "HEALTHY" : "CRITICAL");
+  if (consecutiveHealthFailures > 0) {
+    SerialMon.printf(" (%d/%d failures)", consecutiveHealthFailures, MAX_HEALTH_FAILURES);
+  }
+  SerialMon.println();
+  
   SerialMon.printf("Uptime       : %s\n", Utils::formatUptime(millis()).c_str());
-  SerialMon.printf("Free Memory  : %u KB\n", Utils::getFreeHeap() / 1024);
+  SerialMon.printf("Free Memory  : %u KB", Utils::getFreeHeap() / 1024);
+  if (Utils::getFreeHeap() < MEMORY_CRITICAL_THRESHOLD) {
+    SerialMon.print(" ⚠️ LOW");
+  }
+  SerialMon.println();
   
   SerialMon.println("===================================\n");
 }
@@ -1701,6 +1908,16 @@ void printPowerModeInfo() {
   SerialMon.printf("STATIC       : %d minutes (parked > 5 min)\n", GPS_INTERVAL_STATIC/60000);
   SerialMon.printf("Speed Thresh : %.1f km/h\n", float(MOVEMENT_SPEED_THRESHOLD));
   SerialMon.printf("Park→Static  : %d minutes\n", PARKED_TO_STATIC_TIMEOUT/60000);
+  
+  SerialMon.println("\n=== AUTO-RECOVERY INFO ===");
+  #if ENABLE_AUTO_RESTART
+    SerialMon.printf("Auto-restart : ENABLED (every 72 hours)\n");
+    SerialMon.printf("Memory Alert : %d KB\n", MEMORY_CRITICAL_THRESHOLD/1024);
+    SerialMon.printf("Success Rate : %d%% minimum\n", SUCCESS_RATE_THRESHOLD);
+    SerialMon.printf("Health Check : every 5 minutes\n");
+  #else
+    SerialMon.printf("Auto-restart : DISABLED\n");
+  #endif
   
   SerialMon.println("=============================\n");
 }
