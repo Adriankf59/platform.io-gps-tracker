@@ -1,4 +1,4 @@
-// Config.h - Optimized Configuration with Health Monitoring and Auto-Recovery
+// Config.h - Optimized Configuration with Health Monitoring, Auto-Recovery, and Offline Storage
 // 
 // TESTING MODE CHANGES:
 // 1. GPS interval: Updated movement detection (4 km/h threshold)
@@ -6,6 +6,7 @@
 // 3. Health monitoring: Auto-restart, memory monitoring
 // 4. Auto-recovery: System health checks every 5 minutes
 // 5. Preventive restart: Every 72 hours
+// 6. OFFLINE STORAGE: Auto-save GPS data when network unavailable
 //
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -15,6 +16,32 @@
 // ========================================
 #define TESTING_MODE true                        // Enable testing mode features
 #define TESTING_LOG_VERBOSE true                 // Verbose logging for testing
+
+// ========================================
+// OFFLINE DATA STORAGE CONFIGURATION (NEW)
+// ========================================
+#define ENABLE_OFFLINE_STORAGE true              // Enable offline data storage
+#define OFFLINE_MAX_RECORDS 100                  // Maximum offline records
+#define OFFLINE_RECORD_SIZE 200                  // Estimated size per record (bytes)
+#define OFFLINE_AUTO_SYNC true                   // Auto sync when network available
+#define OFFLINE_SYNC_BATCH_SIZE 5                // Records per sync batch
+#define OFFLINE_SYNC_INTERVAL 2000               // Interval between batches (ms)
+#define OFFLINE_MAINTENANCE_INTERVAL 300000      // Cleanup interval (5 minutes)
+#define OFFLINE_MAX_AGE_HOURS 24                 // Auto-delete records older than 24 hours
+#define OFFLINE_STORAGE_WARNING 15               // Warning when storage near full
+#define OFFLINE_COMPRESSION_ENABLED false        // Enable data compression
+#define OFFLINE_DEBUG_MODE false                 // Enable verbose offline logging
+
+// Offline file paths
+#define OFFLINE_DATA_FILE "/offline_gps.json"    // Main data file
+#define OFFLINE_INDEX_FILE "/offline_index.txt"  // Index tracking file
+#define OFFLINE_CONFIG_FILE "/offline_config.json" // Offline configuration
+
+// Storage size estimation:
+// Each record ≈ 200 bytes in JSON format
+// 100 records ≈ 20KB
+// With 960KB SPIFFS: ~4800 records capacity
+// Recommended max: 100-500 records for safety
 
 // ========================================
 // KONFIGURASI PIN HARDWARE
@@ -65,7 +92,7 @@
 #define GPS_ACCURACY_THRESHOLD 5.0        // Minimum GPS accuracy required (meters)
 
 // ========================================
-// SYSTEM HEALTH MONITORING (NEW)
+// SYSTEM HEALTH MONITORING (ENHANCED)
 // ========================================
 #define ENABLE_AUTO_RESTART true                    // Enable auto-restart
 #define AUTO_RESTART_INTERVAL 259200000             // 72 hours = 3 days (in milliseconds)
@@ -187,6 +214,19 @@
 \"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\"\
 }"
 
+// Offline payload template (compressed for storage)
+#define OFFLINE_PAYLOAD_TEMPLATE "{\
+\"lat\":\"%s\",\
+\"lng\":\"%s\",\
+\"speed\":%d,\
+\"sats\":%d,\
+\"battery\":%.1f,\
+\"timestamp\":%lu,\
+\"timestampStr\":\"%s\",\
+\"gpsId\":\"" GPS_ID "\",\
+\"sent\":false\
+}"
+
 // ========================================
 // PERFORMANCE MONITORING
 // ========================================
@@ -238,6 +278,7 @@
 #define MODULE_WS "WEBSOCKET"            // Modul WebSocket
 #define MODULE_PERF "PERF"               // Modul performance monitoring
 #define MODULE_HEALTH "HEALTH"           // Modul system health monitoring
+#define MODULE_OFFLINE "OFFLINE"         // Modul offline data management
 
 // ========================================
 // FITUR OPSIONAL (TESTING MODE)
@@ -298,6 +339,7 @@
 // ESSENTIAL: ~140 bytes
 // FULL: ~180 bytes  
 // MINIMAL: ~90 bytes
+// OFFLINE: ~120 bytes (compressed format)
 
 // ========================================
 // ADVANCED OPTIMIZATION FEATURES
@@ -365,6 +407,10 @@
   #warning "MAX_PAYLOAD_SIZE very small, may not fit required data"
 #endif
 
+#if ENABLE_OFFLINE_STORAGE && OFFLINE_MAX_RECORDS > 1000
+  #warning "OFFLINE_MAX_RECORDS very high, may cause memory issues"
+#endif
+
 // ========================================
 // PAYLOAD CREATION HELPERS
 // ========================================
@@ -378,6 +424,9 @@
 #define CREATE_MINIMAL_PAYLOAD(lat_str, lng_str) \
   sprintf(payload_buffer, MINIMAL_PAYLOAD_TEMPLATE, lat_str, lng_str)
 
+#define CREATE_OFFLINE_PAYLOAD(lat_str, lng_str, speed_val, sat_val, battery_val, timestamp_val, timestamp_str) \
+  sprintf(payload_buffer, OFFLINE_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, sat_val, battery_val, timestamp_val, timestamp_str)
+
 // ========================================
 // CATATAN PENGEMBANGAN (UPDATED)
 // ========================================
@@ -386,6 +435,7 @@
 // 3. Auto-recovery: System health checks, stuck state detection
 // 4. Performance optimization: Better error handling, connection recovery
 // 5. Memory management: Critical threshold monitoring, leak prevention
+// 6. OFFLINE STORAGE: Auto-save GPS data when network unavailable, auto-sync when available
 // 
 // Target untuk production:
 // - Reliable 24/7 operation dengan auto-recovery
@@ -393,5 +443,6 @@
 // - Robust error handling dan automatic restart
 // - Memory leak prevention dan health monitoring
 // - Preventive maintenance dengan scheduled restart
+// - Seamless offline/online operation dengan data integrity
 
 #endif // CONFIG_H

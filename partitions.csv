@@ -1,0 +1,22 @@
+# ESP32 Partition Table untuk GPS Tracker dengan Offline Storage
+# Name,   Type, SubType, Offset,  Size,     Flags
+nvs,      data, nvs,     0x9000,  0x5000,   
+otadata,  data, ota,     0xe000,  0x2000,   
+app0,     app,  ota_0,   0x10000, 0x180000, 
+app1,     app,  ota_1,   0x190000,0x180000, 
+spiffs,   data, spiffs,  0x310000,0xF0000,  
+
+# Penjelasan Partition:
+# nvs (20KB)    - Non-Volatile Storage untuk WiFi credentials, dll
+# otadata (8KB) - OTA data partition untuk firmware updates  
+# app0 (1.5MB)  - Primary application partition
+# app1 (1.5MB)  - OTA application partition (untuk update firmware)
+# spiffs (960KB)- File system untuk offline GPS data storage
+#
+# Total: 4MB flash (standar ESP32)
+# SPIFFS 960KB lebih dari cukup untuk menyimpan ribuan GPS records
+#
+# Untuk menggunakan partition ini:
+# 1. Simpan file ini sebagai 'partitions.csv' di root project
+# 2. Tambahkan ke platformio.ini:
+#    board_build.partitions = partitions.csv

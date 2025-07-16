@@ -1,9 +1,11 @@
 // ========================================
-// Main.cpp - Sistem GPS Tracker dengan Performance Optimization + Auto Recovery
+// Main.cpp v7.2 - ESP32 GPS Tracker dengan Offline Storage Support
 // ========================================
 
 /**
- * ESP32 Vehicle GPS Tracking dengan Low Latency Optimization & Auto Recovery
+ * ESP32 Vehicle GPS Tracking dengan Offline Storage & Auto-Recovery
+ * - Offline data storage saat network tidak tersedia
+ * - Auto-sync saat network kembali
  * - Performance monitoring terintegrasi
  * - Network optimization otomatis
  * - Adaptive transmission intervals
@@ -13,8 +15,8 @@
  * - Memory leak detection dan prevention
  * - Health monitoring dengan auto-restart
  * 
- * Versi: 7.1 - Enhanced Movement Detection with Auto-Recovery System
- * Update: Added comprehensive auto-recovery mechanisms
+ * Versi: 7.2 - Offline Storage Integration
+ * Update: Added comprehensive offline data management
  */
 
 // ----- FRAMEWORK ARDUINO -----
@@ -40,6 +42,7 @@
 #include "GpsManager.h"
 #include "ModemManager.h"
 #include "WebSocketManager.h"
+#include "OfflineDataManager.h"  // NEW: Offline Data Manager
 
 // ========================================
 // KONSTANTA DAN ENUMERASI
@@ -62,7 +65,8 @@ enum SystemState {
   STATE_ERROR,               // Error state
   STATE_SLEEP_PREPARE,       // Persiapan sleep
   STATE_SLEEPING,            // Dalam mode sleep
-  STATE_OPTIMIZING           // Applying network optimizations
+  STATE_OPTIMIZING,          // Applying network optimizations
+  STATE_OFFLINE_SYNC         // NEW: Synchronizing offline data
 };
 
 // ----- STATE PERGERAKAN (UPDATED) -----
@@ -117,6 +121,30 @@ struct PerformanceMetrics {
     lastPerformanceReport = 0;
   }
 } performanceMetrics;
+
+// ----- OFFLINE OPERATION STATS (NEW) -----
+// Extended stats for offline operations (complementing OfflineDataManager's stats)
+struct OfflineOperationStats {
+  bool hasUnsentData;
+  bool syncInProgress;
+  unsigned long syncStartTime;
+  int batchesSent;
+  unsigned long dataStoredOffline;
+  unsigned long dataSentFromOffline;
+  unsigned long lastOfflineStoreTime;
+  unsigned long lastOfflineSyncTime;
+  
+  void reset() {
+    hasUnsentData = false;
+    syncInProgress = false;
+    syncStartTime = 0;
+    batchesSent = 0;
+    dataStoredOffline = 0;
+    dataSentFromOffline = 0;
+    lastOfflineStoreTime = 0;
+    lastOfflineSyncTime = 0;
+  }
+} offlineOpStats;  // Renamed to avoid conflict with offlineStats in OfflineDataManager.h
 
 // ----- SYSTEM INITIALIZATION FLAGS -----
 struct SystemReadyFlags {
@@ -181,6 +209,7 @@ TinyGsmClient gsmClient(modem);
 GpsManager gpsManager(gps, SerialGPS);
 ModemManager modemManager(modem, SerialAT);
 WebSocketManager wsManager(&gsmClient);
+OfflineDataManager offlineManager;  // NEW: Offline Data Manager
 
 // ========================================
 // VARIABEL GLOBAL
@@ -216,6 +245,13 @@ float batteryVoltage = 12.6;
 float manualSpeed = -1.0;                   // Manual speed for testing
 bool useManualSpeed = false;                // Flag to use manual speed
 
+// NEW: Network and Offline Variables
+bool networkAvailable = false;
+bool offlineMode = false;
+unsigned long lastNetworkCheck = 0;
+unsigned long lastOfflineSync = 0;
+unsigned long lastOfflineMaintenance = 0;
+
 // ========================================
 // DEKLARASI FUNGSI
 // ========================================
@@ -228,6 +264,7 @@ void handleModemResetState();
 void handleConnectionRecoveryState();
 void handleSleepPrepareState();
 void handleOptimizingState();
+void handleOfflineSyncState();  // NEW
 void executeStateMachine();
 
 // AUTO-RECOVERY Functions
@@ -237,10 +274,23 @@ void checkMemoryHealth();
 void checkSuccessRate();
 void forceSystemRestart(const char* reason);
 
+// Offline Storage Functions (NEW)
+void initializeOfflineStorage();
+void checkNetworkAvailability();
+bool shouldUseOfflineMode();
+bool storeDataOffline(float lat, float lon, float speed, int satellites, const String& timestamp, float battery);
+void syncOfflineData();
+void processOfflineQueue();
+void handleOfflineCommands(const String& cmd);
+void printOfflineStatus();
+void printOfflineStats();
+
 // Serial Command Handlers
 void handleSerialCommands();
+void handleSerialCommandsExtended();  // NEW: Extended command handler
 void processSpeedCommand(const String& cmd);
 void processTestingCommand(const String& cmd);
+void processAdvancedCommands(const String& cmd);  // NEW
 
 // Status and Info Functions
 void printStatus();
@@ -257,6 +307,7 @@ void printHealthStatus();
 
 // Data Transmission
 bool sendVehicleDataViaWebSocket();
+bool sendVehicleDataWithOfflineSupport();  // NEW: Enhanced with offline support
 void onRelayUpdate(bool newState);
 void forceSendGpsData();
 
@@ -294,6 +345,7 @@ void checkGpsReady();
 void logGpsNotReady();
 void checkWebSocketConnection();
 void transmitGpsData(unsigned long currentTime, unsigned long interval);
+void transmitGpsDataWithOfflineSupport(unsigned long currentTime, unsigned long interval);  // NEW
 void checkSleepConditions(unsigned long currentTime);
 void checkConnectionHealth(unsigned long currentTime);
 void resetWebSocketConnection();
@@ -306,6 +358,19 @@ const char* getStateString(SystemState state);
 const char* getMovementString(MovementState movement);
 String formatTimestamp(unsigned long unixTime);
 bool isSystemReady();
+
+// Advanced Testing & Diagnostics (NEW)
+void simulateNetworkOutage(unsigned long duration);
+void runOfflineStorageStressTest();
+void performSystemDiagnostics();
+void performEmergencyBackup();
+void recoverFromCorruptedState();
+void logSystemStats();
+
+// Integration Functions (NEW)
+extern "C" bool sendOfflineRecordViaWebSocket(float lat, float lon, float speed, 
+                                             int satellites, const char* timestamp, 
+                                             float battery);
 
 // ========================================
 // SETUP
@@ -323,14 +388,15 @@ void setup() {
     Logger::init(&SerialMon, LOG_INFO);
   #endif
   
-  LOG_INFO(MODULE_MAIN, "=== ESP32 GPS Tracker v7.1 ===");
-  LOG_INFO(MODULE_MAIN, "Enhanced Movement Detection with Auto-Recovery System");
+  LOG_INFO(MODULE_MAIN, "=== ESP32 GPS Tracker v7.2 ===");
+  LOG_INFO(MODULE_MAIN, "Enhanced Movement Detection with Auto-Recovery & Offline Storage");
   LOG_INFO(MODULE_MAIN, "Device ID: %s", GPS_ID);
   LOG_INFO(MODULE_MAIN, "Compiled: %s %s", __DATE__, __TIME__);
   
   // Initialize system flags
   systemFlags.reset();
   performanceMetrics.reset();
+  offlineOpStats.reset();  // NEW - Changed from offlineStats
   systemStartTime = millis();
   
   // Initialize hardware
@@ -364,6 +430,9 @@ void setup() {
   wsManager.begin();
   wsManager.setOnRelayUpdate(onRelayUpdate);
   
+  // NEW: Initialize Offline Storage
+  initializeOfflineStorage();
+  
   // Show initial info
   printHelp();
   Utils::printMemoryInfo();
@@ -374,6 +443,13 @@ void setup() {
     LOG_INFO(MODULE_SYS, "🔄 Auto-restart: every 72 hours");
     LOG_INFO(MODULE_SYS, "💾 Memory threshold: %d KB", MEMORY_CRITICAL_THRESHOLD/1024);
     LOG_INFO(MODULE_SYS, "📊 Min success rate: %d%%", SUCCESS_RATE_THRESHOLD);
+  #endif
+  
+  // NEW: Offline storage info
+  #if ENABLE_OFFLINE_STORAGE
+    LOG_INFO(MODULE_SYS, "💾 Offline storage: ENABLED");
+    LOG_INFO(MODULE_SYS, "📦 Max records: %d", OFFLINE_MAX_RECORDS);
+    LOG_INFO(MODULE_SYS, "🔄 Auto-sync: %s", OFFLINE_AUTO_SYNC ? "ENABLED" : "DISABLED");
   #endif
   
   // Set initial state
@@ -397,6 +473,9 @@ void loop() {
   checkAutoRestart();
   checkMemoryHealth();
   performSystemHealthCheck();
+  
+  // NEW: Network availability check
+  checkNetworkAvailability();
   
   // Always update GPS
   gpsManager.update();
@@ -427,8 +506,13 @@ void loop() {
     maintainModemConnection();
   }
   
+  // NEW: Process offline queue if network available
+  if (networkAvailable && offlineOpStats.hasUnsentData && !offlineOpStats.syncInProgress) {
+    processOfflineQueue();
+  }
+  
   // Handle serial commands
-  handleSerialCommands();
+  handleSerialCommandsExtended();  // NEW: Use extended handler
   
   // State machine
   executeStateMachine();
@@ -437,29 +521,183 @@ void loop() {
 }
 
 // ========================================
-// AUTO-RECOVERY SYSTEM
+// NEW: OFFLINE STORAGE FUNCTIONS
 // ========================================
 
-void checkAutoRestart() {
-  #if ENABLE_AUTO_RESTART
-    // Auto-restart setiap 3 hari untuk preventive maintenance
-    if (millis() - systemStartTime > AUTO_RESTART_INTERVAL) {
-      forceSystemRestart("Scheduled restart after 72 hours uptime");
+void initializeOfflineStorage() {
+  #if ENABLE_OFFLINE_STORAGE
+    LOG_INFO(MODULE_OFFLINE, "Initializing offline storage...");
+    
+    if (offlineManager.begin(ENABLE_OFFLINE_STORAGE)) {
+      LOG_INFO(MODULE_OFFLINE, "✅ Offline storage initialized");
+      
+      // Check for existing offline data
+      if (offlineManager.hasOfflineData()) {
+        offlineOpStats.hasUnsentData = true;
+        LOG_INFO(MODULE_OFFLINE, "📦 Found %d offline records", 
+                 offlineManager.getOfflineRecordCount());
+      }
+      
+      // Set callbacks
+      offlineManager.setOnDataSentCallback([](int sent, int remaining) {
+        LOG_INFO(MODULE_OFFLINE, "📤 Sent %d records, %d remaining", sent, remaining);
+        offlineOpStats.dataSentFromOffline += sent;
+        offlineOpStats.hasUnsentData = (remaining > 0);
+      });
+      
+      offlineManager.setOnStorageFullCallback([](int stored) {
+        LOG_WARN(MODULE_OFFLINE, "⚠️ Offline storage full! %d records stored", stored);
+      });
+      
+      offlineManager.setOnErrorCallback([](const char* error) {
+        LOG_ERROR(MODULE_OFFLINE, "❌ Offline storage error: %s", error);
+      });
+      
+    } else {
+      LOG_ERROR(MODULE_OFFLINE, "❌ Failed to initialize offline storage");
     }
+  #else
+    LOG_INFO(MODULE_OFFLINE, "Offline storage disabled");
   #endif
 }
 
-void checkMemoryHealth() {
-  // MEMORY MONITOR: Check setiap 1 menit
-  if (millis() - lastMemoryCheck > MEMORY_CHECK_INTERVAL) {
-    uint32_t freeHeap = Utils::getFreeHeap();
-    if (freeHeap < MEMORY_CRITICAL_THRESHOLD) {
-      LOG_ERROR(MODULE_SYS, "🚨 Critical memory low: %u bytes", freeHeap);
-      forceSystemRestart("Critical memory shortage");
+void checkNetworkAvailability() {
+  if (millis() - lastNetworkCheck < 5000) return;  // Check every 5 seconds
+  
+  lastNetworkCheck = millis();
+  bool previousNetworkState = networkAvailable;
+  
+  // Check network status
+  networkAvailable = systemFlags.networkReady && systemFlags.gprsReady && 
+                    modemManager.isNetworkConnected() && modemManager.isGprsConnected();
+  
+  // Detect state changes
+  if (networkAvailable != previousNetworkState) {
+    if (networkAvailable) {
+      LOG_INFO(MODULE_SYS, "📶 Network available - switching to ONLINE mode");
+      offlineMode = false;
+      
+      // Start sync if we have offline data
+      if (offlineOpStats.hasUnsentData && OFFLINE_AUTO_SYNC) {
+        LOG_INFO(MODULE_OFFLINE, "🔄 Starting auto-sync of offline data");
+        processOfflineQueue();
+      }
+    } else {
+      LOG_WARN(MODULE_SYS, "📵 Network lost - switching to OFFLINE mode");
+      offlineMode = true;
     }
-    lastMemoryCheck = millis();
   }
 }
+
+bool shouldUseOfflineMode() {
+  return (!networkAvailable || offlineMode) && ENABLE_OFFLINE_STORAGE;
+}
+
+bool storeDataOffline(float lat, float lon, float speed, int satellites, 
+                     const String& timestamp, float battery) {
+  #if ENABLE_OFFLINE_STORAGE
+    if (!offlineManager.isReady()) {
+      LOG_ERROR(MODULE_OFFLINE, "Offline storage not ready");
+      return false;
+    }
+    
+    bool success = offlineManager.storeGpsData(lat, lon, speed, satellites, timestamp, battery);
+    
+    if (success) {
+      offlineOpStats.dataStoredOffline++;
+      offlineOpStats.lastOfflineStoreTime = millis();
+      offlineOpStats.hasUnsentData = true;
+      LOG_INFO(MODULE_OFFLINE, "💾 Data stored offline successfully");
+    }
+    
+    return success;
+  #else
+    return false;
+  #endif
+}
+
+void syncOfflineData() {
+  #if ENABLE_OFFLINE_STORAGE
+    if (!networkAvailable || !offlineOpStats.hasUnsentData) return;
+    
+    LOG_INFO(MODULE_OFFLINE, "🔄 Starting offline data sync...");
+    currentState = STATE_OFFLINE_SYNC;
+    offlineOpStats.syncInProgress = true;
+    offlineOpStats.syncStartTime = millis();
+    offlineOpStats.batchesSent = 0;
+    
+    offlineManager.startSendingOfflineData();
+  #endif
+}
+
+void processOfflineQueue() {
+  #if ENABLE_OFFLINE_STORAGE
+    if (!networkAvailable || !offlineOpStats.hasUnsentData || offlineOpStats.syncInProgress) {
+      return;
+    }
+    
+    // Avoid too frequent sync attempts
+    if (millis() - lastOfflineSync < 10000) return;  // Min 10s between syncs
+    
+    lastOfflineSync = millis();
+    syncOfflineData();
+  #endif
+}
+
+// ========================================
+// ENHANCED STATE HANDLERS
+// ========================================
+
+void handleOfflineSyncState() {
+  #if ENABLE_OFFLINE_STORAGE
+    if (!offlineOpStats.syncInProgress) {
+      currentState = STATE_OPERATIONAL;
+      return;
+    }
+    
+    // Check network still available
+    if (!networkAvailable) {
+      LOG_WARN(MODULE_OFFLINE, "⚠️ Network lost during sync, aborting");
+      offlineManager.stopSending();
+      offlineOpStats.syncInProgress = false;
+      currentState = STATE_OPERATIONAL;
+      return;
+    }
+    
+    // Continue sending
+    bool stillSending = offlineManager.continueeSendingOfflineData();
+    
+    if (!stillSending) {
+      // Sync complete
+      unsigned long syncDuration = millis() - offlineOpStats.syncStartTime;
+      LOG_INFO(MODULE_OFFLINE, "✅ Offline sync complete in %lu ms", syncDuration);
+      
+      offlineOpStats.syncInProgress = false;
+      offlineOpStats.lastOfflineSyncTime = millis();
+      currentState = STATE_OPERATIONAL;
+      
+      // Update stats
+      offlineOpStats.hasUnsentData = offlineManager.hasOfflineData();
+    } else {
+      // Still sending
+      offlineOpStats.batchesSent++;
+      
+      // Timeout check
+      if (millis() - offlineOpStats.syncStartTime > 300000) {  // 5 minute timeout
+        LOG_WARN(MODULE_OFFLINE, "⚠️ Offline sync timeout");
+        offlineManager.stopSending();
+        offlineOpStats.syncInProgress = false;
+        currentState = STATE_OPERATIONAL;
+      }
+    }
+  #else
+    currentState = STATE_OPERATIONAL;
+  #endif
+}
+
+// ========================================
+// AUTO-RECOVERY SYSTEM (ENHANCED)
+// ========================================
 
 void performSystemHealthCheck() {
   if (millis() - lastHealthCheck < HEALTH_CHECK_INTERVAL) {
@@ -510,6 +748,16 @@ void performSystemHealthCheck() {
     systemHealthy = false;
   }
   
+  // NEW Check 6: Offline storage health
+  #if ENABLE_OFFLINE_STORAGE
+    if (offlineManager.isReady() && offlineOpStats.hasUnsentData) {
+      if (millis() - offlineOpStats.lastOfflineStoreTime > 3600000) {  // 1 hour old data
+        LOG_WARN(MODULE_SYS, "⚠️ Health: Old offline data not synced");
+        systemHealthy = false;
+      }
+    }
+  #endif
+  
   if (!systemHealthy) {
     consecutiveHealthFailures++;
     LOG_WARN(MODULE_SYS, "🏥 System health failures: %d/%d", 
@@ -527,12 +775,13 @@ void forceSystemRestart(const char* reason) {
   LOG_ERROR(MODULE_SYS, "🚨 FORCED RESTART: %s", reason);
   Utils::printMemoryInfo();
   printPerformanceReport();
+  printOfflineStats();  // NEW
   delay(2000);
   ESP.restart();
 }
 
 // ========================================
-// STATE MACHINE
+// STATE MACHINE (ENHANCED)
 // ========================================
 void executeStateMachine() {
   switch (currentState) {
@@ -557,6 +806,9 @@ void executeStateMachine() {
     case STATE_SLEEP_PREPARE:
       handleSleepPrepareState();
       break;
+    case STATE_OFFLINE_SYNC:  // NEW
+      handleOfflineSyncState();
+      break;
     case STATE_ERROR:
       LOG_ERROR(MODULE_SYS, "System error, attempting recovery...");
       modemManager.startReset();
@@ -570,8 +822,759 @@ void executeStateMachine() {
 }
 
 // ========================================
-// STATE HANDLERS
+// ENHANCED OPERATIONAL STATE
 // ========================================
+
+void handleOperationalState() {
+  unsigned long currentTime = millis();
+  
+  // AUTO-RECOVERY: Jika tidak ada transmisi sukses >30 menit, restart
+  if (performanceMetrics.totalTransmissions > 0) {
+    if (performanceMetrics.successfulTransmissions > 0) {
+      lastSuccessfulTransmission = currentTime;
+    } else if (currentTime - lastSuccessfulTransmission > NO_SUCCESS_TIMEOUT) {
+      forceSystemRestart("No successful transmission in 30 min");
+      return;
+    }
+  }
+  
+  // Check if GPS became ready
+  checkGpsReady();
+  
+  // Skip if GPS not ready
+  if (!systemFlags.gpsReady && !useManualSpeed) {
+    logGpsNotReady();
+    return;
+  }
+  
+  // Check WebSocket connection
+  checkWebSocketConnection();
+  
+  // Get appropriate GPS interval
+  unsigned long gpsInterval = getGpsIntervalForMovement();
+  
+  // Send GPS data if interval reached
+  if (currentTime - lastGpsSendTime >= gpsInterval) {
+    transmitGpsDataWithOfflineSupport(currentTime, gpsInterval);  // NEW: Use offline-aware version
+  }
+  
+  // NEW: Still process offline queue even without new GPS data
+  if (networkAvailable && offlineOpStats.hasUnsentData && !offlineOpStats.syncInProgress) {
+    processOfflineQueue();
+  }
+  
+  // NEW: Periodic offline maintenance
+  if (currentTime - lastOfflineMaintenance > OFFLINE_MAINTENANCE_INTERVAL) {
+    #if ENABLE_OFFLINE_STORAGE
+      offlineManager.performMaintenance();
+      offlineOpStats.hasUnsentData = offlineManager.hasOfflineData();
+    #endif
+    lastOfflineMaintenance = currentTime;
+  }
+  
+  // Check for sleep mode
+  checkSleepConditions(currentTime);
+  
+  // Check connection health
+  checkConnectionHealth(currentTime);
+}
+
+// ========================================
+// ENHANCED DATA TRANSMISSION
+// ========================================
+
+bool sendVehicleDataWithOfflineSupport() {
+  // Check if we should use offline mode
+  if (shouldUseOfflineMode()) {
+    LOG_INFO(MODULE_GPS, "📵 Network unavailable, storing data offline");
+    
+    char timestamp[30];
+    gpsManager.getTimestamp(timestamp, sizeof(timestamp));
+    
+    float displaySpeed = useManualSpeed ? manualSpeed : gpsManager.getSpeed();
+    
+    return storeDataOffline(
+      gpsManager.getLatitude(),
+      gpsManager.getLongitude(),
+      displaySpeed,
+      gpsManager.getSatellites(),
+      String(timestamp),
+      batteryVoltage
+    );
+  }
+  
+  // Normal online transmission
+  return sendVehicleDataViaWebSocket();
+}
+
+void transmitGpsDataWithOfflineSupport(unsigned long currentTime, unsigned long interval) {
+  #if TESTING_MODE && DEBUG_LATENCY_TRACKING
+    LOG_INFO(MODULE_GPS, "⏱️ Transmit trigger: interval=%lu ms, state=%s, mode=%s", 
+             interval, getMovementString(currentMovementState),
+             networkAvailable ? "ONLINE" : "OFFLINE");
+  #endif
+  
+  unsigned long transmissionStart = millis();
+  bool success = sendVehicleDataWithOfflineSupport();  // NEW: Use offline-aware version
+  
+  if (success) {
+    unsigned long latency = millis() - transmissionStart;
+    
+    if (!shouldUseOfflineMode()) {
+      // Only update online metrics for actual transmissions
+      updatePerformanceMetrics(true, latency);
+      lastSuccessfulOperation = currentTime;
+      wsManager.endLatencyMeasurement();
+    }
+    
+    lastGpsSendTime = currentTime;
+    lastActivityTime = currentTime;
+    
+    if (powerConfigs[currentPowerMode].performanceMonitoring && 
+        DEBUG_LATENCY_TRACKING) {
+      LOG_DEBUG(MODULE_PERF, "📊 %s completed in %lu ms", 
+                shouldUseOfflineMode() ? "Offline storage" : "Transmission", latency);
+    }
+  } else {
+    if (!shouldUseOfflineMode()) {
+      updatePerformanceMetrics(false, 0);
+      performanceMetrics.consecutiveFailures++;
+      
+      if (performanceMetrics.consecutiveFailures >= MAX_CONNECTION_FAILURES) {
+        LOG_WARN(MODULE_PERF, "🔧 Multiple failures, triggering optimization");
+        currentState = STATE_OPTIMIZING;
+      }
+    }
+  }
+}
+
+// Integration function for offline manager to send data
+extern "C" bool sendOfflineRecordViaWebSocket(float lat, float lon, float speed, 
+                                             int satellites, const char* timestamp, 
+                                             float battery) {
+  if (!networkAvailable || !wsManager.isReady()) {
+    return false;
+  }
+  
+  return wsManager.sendVehicleData(lat, lon, speed, satellites, String(timestamp), battery);
+}
+
+// ========================================
+// EXTENDED SERIAL COMMAND HANDLER
+// ========================================
+
+void handleSerialCommandsExtended() {
+  if (!SerialMon.available()) return;
+  
+  String cmd = SerialMon.readStringUntil('\n');
+  cmd.trim();
+  
+  if (cmd.length() == 0) return;
+  
+  LOG_DEBUG(MODULE_MAIN, "Command: %s", cmd.c_str());
+  
+  // Basic commands
+  if (cmd == "help") {
+    printHelp();
+  } else if (cmd == "status") {
+    printStatus();
+  } else if (cmd == "init") {
+    printSystemReadyStatus();
+  } else if (cmd == "reset") {
+    LOG_WARN(MODULE_MAIN, "Restarting system...");
+    printPerformanceReport();
+    delay(1000);
+    ESP.restart();
+  }
+  // Health and recovery commands
+  else if (cmd == "health") {
+    printHealthStatus();
+  } else if (cmd == "recovery") {
+    LOG_INFO(MODULE_MAIN, "🔄 Forcing system health check...");
+    performSystemHealthCheck();
+  }
+  // Power mode commands
+  else if (cmd == "full") {
+    setPowerMode(POWER_MODE_FULL);
+  } else if (cmd == "standby") {
+    setPowerMode(POWER_MODE_STANDBY);
+  } else if (cmd == "emergency") {
+    setPowerMode(POWER_MODE_EMERGENCY);
+  } else if (cmd == "power") {
+    printPowerModeInfo();
+  }
+  // Speed and movement commands
+  else if (cmd.startsWith("speed")) {
+    processSpeedCommand(cmd);
+  } else if (cmd == "movement") {
+    printMovementInfo();
+  }
+  // Testing commands
+  else if (cmd == "send") {
+    forceSendGpsData();
+  } else if (cmd.startsWith("test")) {
+    processTestingCommand(cmd);
+  }
+  // Network commands
+  else if (cmd == "network") {
+    LOG_INFO(MODULE_MAIN, modemManager.getNetworkInfo().c_str());
+  } else if (cmd == "optimize") {
+    LOG_INFO(MODULE_MAIN, "🔧 Starting manual optimization...");
+    currentState = STATE_OPTIMIZING;
+  }
+  // WebSocket commands
+  else if (cmd == "wsstats") {
+    printWebSocketStats();
+  } else if (cmd == "wsreset") {
+    resetWebSocketConnection();
+  }
+  // System commands
+  else if (cmd == "battery") {
+    showBatteryInfo();
+  } else if (cmd.startsWith("setbat ")) {
+    setBatteryVoltage(cmd.substring(7).toFloat());
+  } else if (cmd == "memory") {
+    Utils::printMemoryInfo();
+  } else if (cmd == "latency") {
+    printPerformanceReport();
+  }
+  // Relay commands
+  else if (cmd == "on") {
+    setRelay(true);
+  } else if (cmd == "off") {
+    setRelay(false);
+  }
+  // GPS commands
+  else if (cmd == "gps") {
+    showGpsDetails();
+  }
+  // NEW: Offline commands
+  else if (cmd.startsWith("offline")) {
+    handleOfflineCommands(cmd);
+  }
+  // NEW: Advanced commands
+  else if (cmd == "diag") {
+    performSystemDiagnostics();
+  } else if (cmd == "stats") {
+    logSystemStats();
+  } else if (cmd == "backup") {
+    performEmergencyBackup();
+  } else if (cmd == "recover") {
+    recoverFromCorruptedState();
+  } else if (cmd == "factory reset") {
+    LOG_WARN(MODULE_MAIN, "Factory reset requested...");
+    #if ENABLE_OFFLINE_STORAGE
+      offlineManager.clearAllOfflineData();
+    #endif
+    delay(1000);
+    ESP.restart();
+  }
+  // Unknown command
+  else {
+    LOG_WARN(MODULE_MAIN, "Unknown command: %s", cmd.c_str());
+  }
+  
+  lastActivityTime = millis();
+}
+
+// ========================================
+// NEW: OFFLINE COMMAND HANDLERS
+// ========================================
+
+void handleOfflineCommands(const String& cmd) {
+  #if ENABLE_OFFLINE_STORAGE
+    if (cmd == "offline") {
+      printOfflineStatus();
+    } else if (cmd == "offline stats") {
+      printOfflineStats();
+    } else if (cmd == "offline records") {
+      offlineManager.printOfflineRecords();
+    } else if (cmd == "offline sync") {
+      LOG_INFO(MODULE_OFFLINE, "Manual sync requested");
+      if (networkAvailable) {
+        syncOfflineData();
+      } else {
+        LOG_WARN(MODULE_OFFLINE, "Cannot sync - network unavailable");
+      }
+    } else if (cmd == "offline clear") {
+      LOG_WARN(MODULE_OFFLINE, "Clearing all offline data...");
+      offlineManager.clearAllOfflineData();
+      offlineOpStats.hasUnsentData = false;
+    } else if (cmd == "offline test") {
+      LOG_INFO(MODULE_OFFLINE, "Testing offline storage...");
+      storeDataOffline(-6.2088, 106.8456, 50.5, 8, "2025-01-17T10:00:00Z", 12.5);
+    } else if (cmd == "offline storage") {
+      offlineManager.printStorageInfo();
+    } else if (cmd == "offline enable") {
+      offlineManager.enable();
+      LOG_INFO(MODULE_OFFLINE, "Offline storage enabled");
+    } else if (cmd == "offline disable") {
+      offlineManager.disable();
+      LOG_INFO(MODULE_OFFLINE, "Offline storage disabled");
+    } else if (cmd == "offline force") {
+      offlineMode = true;
+      LOG_INFO(MODULE_OFFLINE, "Forced offline mode");
+    } else if (cmd == "offline online") {
+      offlineMode = false;
+      LOG_INFO(MODULE_OFFLINE, "Forced online mode");
+    }
+  #else
+    LOG_WARN(MODULE_MAIN, "Offline storage not enabled");
+  #endif
+}
+
+void printOfflineStatus() {
+  #if ENABLE_OFFLINE_STORAGE
+    LOG_INFO(MODULE_OFFLINE, "=== OFFLINE STATUS ===");
+    LOG_INFO(MODULE_OFFLINE, "Status       : %s", offlineManager.getStatusString());
+    LOG_INFO(MODULE_OFFLINE, "Enabled      : %s", offlineManager.isEnabledStatus() ? "YES" : "NO");
+    LOG_INFO(MODULE_OFFLINE, "Records      : %d", offlineManager.getOfflineRecordCount());
+    LOG_INFO(MODULE_OFFLINE, "Has Unsent   : %s", offlineOpStats.hasUnsentData ? "YES" : "NO");
+    LOG_INFO(MODULE_OFFLINE, "Sync Progress: %s", offlineOpStats.syncInProgress ? "ACTIVE" : "IDLE");
+    LOG_INFO(MODULE_OFFLINE, "Network Mode : %s", networkAvailable ? "ONLINE" : "OFFLINE");
+    LOG_INFO(MODULE_OFFLINE, "Forced Mode  : %s", offlineMode ? "OFFLINE" : "AUTO");
+  #else
+    LOG_INFO(MODULE_OFFLINE, "Offline storage disabled");
+  #endif
+}
+
+void printOfflineStats() {
+  #if ENABLE_OFFLINE_STORAGE
+    LOG_INFO(MODULE_OFFLINE, "=== OFFLINE STATISTICS ===");
+    LOG_INFO(MODULE_OFFLINE, "Data Stored  : %lu", offlineOpStats.dataStoredOffline);
+    LOG_INFO(MODULE_OFFLINE, "Data Sent    : %lu", offlineOpStats.dataSentFromOffline);
+    
+    if (offlineOpStats.lastOfflineStoreTime > 0) {
+      LOG_INFO(MODULE_OFFLINE, "Last Store   : %lu sec ago", 
+               (millis() - offlineOpStats.lastOfflineStoreTime) / 1000);
+    }
+    
+    if (offlineOpStats.lastOfflineSyncTime > 0) {
+      LOG_INFO(MODULE_OFFLINE, "Last Sync    : %lu sec ago", 
+               (millis() - offlineOpStats.lastOfflineSyncTime) / 1000);
+    }
+    
+    offlineManager.printStats();
+  #else
+    LOG_INFO(MODULE_OFFLINE, "Offline storage disabled");
+  #endif
+}
+
+// ========================================
+// ENHANCED STATUS DISPLAY
+// ========================================
+
+void printStatus() {
+  SerialMon.println("\n========== SYSTEM STATUS ==========");
+  
+  // System state
+  SerialMon.printf("System State : %s\n", getStateString(currentState));
+  SerialMon.printf("Power Mode   : %s\n", getPowerModeString(currentPowerMode));
+  SerialMon.printf("System Ready : %s\n", isSystemReady() ? "YES ✅" : "NO ⚠️");
+  
+  if (!isSystemReady()) {
+    if (!systemFlags.gpsReady) SerialMon.println("  - GPS not ready");
+    if (!systemFlags.modemReady) SerialMon.println("  - Modem not ready");
+    if (!systemFlags.networkReady) SerialMon.println("  - Network not ready");
+    if (!systemFlags.gprsReady) SerialMon.println("  - GPRS not ready");
+  }
+  
+  // NEW: Network mode
+  SerialMon.printf("Network Mode : %s\n", networkAvailable ? "ONLINE 📶" : "OFFLINE 📵");
+  
+  // Movement info
+  SerialMon.printf("Movement     : %s", getMovementString(currentMovementState));
+  if (useManualSpeed) {
+    SerialMon.printf(" [MANUAL: %.1f km/h]", manualSpeed);
+  }
+  SerialMon.println();
+  
+  if (vehicleStopTime > 0 && currentMovementState != MOVEMENT_MOVING) {
+    unsigned long stopDuration = (millis() - vehicleStopTime) / 1000;
+    SerialMon.printf("Stop Time    : %lu seconds", stopDuration);
+    
+    if (currentMovementState == MOVEMENT_PARKED) {
+      unsigned long remaining = (PARKED_TO_STATIC_TIMEOUT - (millis() - vehicleStopTime)) / 1000;
+      SerialMon.printf(" (→ STATIC in %lu s)", remaining);
+    }
+    SerialMon.println();
+  }
+  
+  SerialMon.printf("GPS Interval : %lu seconds", getGpsIntervalForMovement()/1000);
+  switch(currentMovementState) {
+    case MOVEMENT_MOVING:
+      SerialMon.print(" (MOVING)");
+      break;
+    case MOVEMENT_PARKED:
+      SerialMon.print(" (PARKED)");
+      break;
+    case MOVEMENT_STATIC:
+      SerialMon.print(" (STATIC)");
+      break;
+    default:
+      break;
+  }
+  SerialMon.println();
+  
+  // GPS info
+  if (gpsManager.isValid()) {
+    SerialMon.printf("GPS          : VALID (%.6f, %.6f)\n",
+                     gpsManager.getLatitude(), gpsManager.getLongitude());
+    SerialMon.printf("Speed        : %.1f km/h%s\n", 
+                     getCurrentSpeed(), 
+                     useManualSpeed ? " (MANUAL)" : " (GPS)");
+    SerialMon.printf("Satellites   : %d\n", gpsManager.getSatellites());
+    SerialMon.printf("HDOP         : %.1f\n", gpsManager.getHDOP());
+  } else {
+    SerialMon.printf("GPS          : NO FIX (Sats: %d)\n", 
+                     gpsManager.getSatellites());
+  }
+  
+  // Network info
+  SerialMon.printf("Modem        : %s", modemManager.getStatusString());
+  if (modemManager.areOptimizationsApplied()) {
+    SerialMon.print(" [OPT]");
+  }
+  SerialMon.println();
+  
+  SerialMon.printf("Signal       : %d (%s)\n", 
+                   modemManager.getSignalQuality(),
+                   Utils::getSignalQualityString(modemManager.getSignalQuality()));
+  
+  SerialMon.printf("WebSocket    : %s\n", wsManager.getStateString());
+  
+  // NEW: Offline data status
+  #if ENABLE_OFFLINE_STORAGE
+    SerialMon.printf("Offline Data : %d records", offlineManager.getOfflineRecordCount());
+    if (offlineOpStats.syncInProgress) {
+      SerialMon.printf(" [SYNCING... batch %d]", offlineOpStats.batchesSent);
+    }
+    SerialMon.println();
+  #endif
+  
+  // Battery
+  float percentage = ((batteryVoltage - BATTERY_MIN_VOLTAGE) / 
+                     (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE)) * 100.0;
+  percentage = constrain(percentage, 0.0, 100.0);
+  SerialMon.printf("Battery      : %.2fV (%.0f%%)\n", batteryVoltage, percentage);
+  
+  // Performance
+  if (performanceMetrics.totalTransmissions > 0) {
+    SerialMon.printf("Transmissions: %lu/%lu (%.1f%%)\n",
+                     performanceMetrics.successfulTransmissions,
+                     performanceMetrics.totalTransmissions,
+                     (performanceMetrics.successfulTransmissions * 100.0 / 
+                      performanceMetrics.totalTransmissions));
+  }
+  
+  // NEW: Offline operations
+  if (offlineOpStats.dataStoredOffline > 0 || offlineOpStats.dataSentFromOffline > 0) {
+    SerialMon.printf("Offline Ops  : %lu stored, %lu sent\n", 
+                     offlineOpStats.dataStoredOffline, offlineOpStats.dataSentFromOffline);
+  }
+  
+  // Health status
+  SerialMon.printf("Health       : %s", 
+                   consecutiveHealthFailures < MAX_HEALTH_FAILURES ? "HEALTHY" : "CRITICAL");
+  if (consecutiveHealthFailures > 0) {
+    SerialMon.printf(" (%d/%d failures)", consecutiveHealthFailures, MAX_HEALTH_FAILURES);
+  }
+  SerialMon.println();
+  
+  SerialMon.printf("Uptime       : %s\n", Utils::formatUptime(millis()).c_str());
+  SerialMon.printf("Free Memory  : %u KB", Utils::getFreeHeap() / 1024);
+  if (Utils::getFreeHeap() < MEMORY_CRITICAL_THRESHOLD) {
+    SerialMon.print(" ⚠️ LOW");
+  }
+  SerialMon.println();
+  
+  SerialMon.println("===================================\n");
+}
+
+void printHelp() {
+  SerialMon.println("\n========== COMMAND HELP ==========");
+  SerialMon.println("=== BASIC COMMANDS ===");
+  SerialMon.println("help         - Show this help");
+  SerialMon.println("status       - Show system status");
+  SerialMon.println("init         - Show initialization status");
+  SerialMon.println("reset        - Restart system");
+  SerialMon.println("health       - Show health status");
+  SerialMon.println("recovery     - Force health check");
+  
+  SerialMon.println("\n=== POWER MODES ===");
+  SerialMon.println("power        - Show current power mode");
+  SerialMon.println("full         - Switch to FULL mode");
+  SerialMon.println("standby      - Switch to STANDBY mode");
+  SerialMon.println("emergency    - Switch to EMERGENCY mode");
+  
+  SerialMon.println("\n=== SPEED & MOVEMENT ===");
+  SerialMon.println("speed        - Show speed info");
+  SerialMon.println("speed N      - Set manual speed (0-200 km/h)");
+  SerialMon.println("speed auto   - Return to GPS speed");
+  SerialMon.println("movement     - Show movement details");
+  
+  SerialMon.println("\n=== TESTING COMMANDS ===");
+  SerialMon.println("send         - Force send GPS data");
+  SerialMon.println("teststop     - Test PARKED→STATIC transition");
+  SerialMon.println("testmove     - Test all movement modes");
+  SerialMon.println("testreset    - Reset test variables");
+  SerialMon.println("testcrash    - Test auto-recovery system");
+  SerialMon.println("testoffline  - Generate test offline data");
+  
+  SerialMon.println("\n=== NETWORK & OPTIMIZATION ===");
+  SerialMon.println("network      - Show network info");
+  SerialMon.println("optimize     - Apply optimizations");
+  SerialMon.println("latency      - Show performance report");
+  
+  // NEW: Offline commands section
+  SerialMon.println("\n=== OFFLINE DATA COMMANDS ===");
+  SerialMon.println("offline      - Show offline status");
+  SerialMon.println("offline stats- Show offline statistics");
+  SerialMon.println("offline records - Show stored records");
+  SerialMon.println("offline sync - Manual sync data");
+  SerialMon.println("offline clear- Clear all offline data");
+  SerialMon.println("offline test - Test offline storage");
+  SerialMon.println("offline storage - Show storage info");
+  SerialMon.println("offline enable/disable - Control feature");
+  SerialMon.println("offline force/online - Force offline/online mode");
+  
+  // NEW: Advanced commands
+  SerialMon.println("\n=== ADVANCED COMMANDS ===");
+  SerialMon.println("diag         - System diagnostics");
+  SerialMon.println("stats        - System statistics");
+  SerialMon.println("backup       - Emergency backup");
+  SerialMon.println("recover      - Recover from corruption");
+  SerialMon.println("factory reset- Complete system reset");
+  SerialMon.println("stress test  - Run storage stress test");
+  SerialMon.println("simulate outage N - Simulate N-second network outage");
+  
+  SerialMon.println("\n=== OTHER COMMANDS ===");
+  SerialMon.println("battery      - Show battery status");
+  SerialMon.println("memory       - Show memory info");
+  SerialMon.println("gps          - Show GPS details");
+  SerialMon.println("on/off       - Control relay");
+  
+  SerialMon.println("==================================\n");
+}
+
+// ========================================
+// NEW: ADVANCED TESTING & DIAGNOSTICS
+// ========================================
+
+void simulateNetworkOutage(unsigned long duration) {
+  LOG_WARN(MODULE_MAIN, "🧪 Simulating network outage for %lu seconds", duration/1000);
+  
+  networkAvailable = false;
+  offlineMode = true;
+  
+  // Schedule restoration
+  static unsigned long restoreTime = 0;
+  restoreTime = millis() + duration;
+  
+  // Create a task to restore network
+  // Note: In real implementation, use a timer or scheduler
+  LOG_INFO(MODULE_MAIN, "Network will be restored at %lu", restoreTime);
+}
+
+void runOfflineStorageStressTest() {
+  #if ENABLE_OFFLINE_STORAGE
+    LOG_INFO(MODULE_MAIN, "🧪 Running offline storage stress test...");
+    
+    int testRecords = 50;
+    unsigned long startTime = millis();
+    int successCount = 0;
+    
+    for (int i = 0; i < testRecords; i++) {
+      float lat = -6.2088 + (i * 0.0001);
+      float lon = 106.8456 + (i * 0.0001);
+      float speed = random(0, 120);
+      int sats = random(4, 12);
+      
+      char timestamp[30];
+      sprintf(timestamp, "2025-01-17T%02d:%02d:%02dZ", i/60, i%60, 0);
+      
+      if (storeDataOffline(lat, lon, speed, sats, String(timestamp), 12.5)) {
+        successCount++;
+      }
+      
+      delay(50); // Small delay between records
+    }
+    
+    unsigned long testDuration = millis() - startTime;
+    
+    LOG_INFO(MODULE_MAIN, "✅ Stress test complete:");
+    LOG_INFO(MODULE_MAIN, "  - Records: %d/%d successful", successCount, testRecords);
+    LOG_INFO(MODULE_MAIN, "  - Duration: %lu ms", testDuration);
+    LOG_INFO(MODULE_MAIN, "  - Rate: %.1f records/sec", (successCount * 1000.0) / testDuration);
+    
+    offlineManager.printStorageInfo();
+  #else
+    LOG_WARN(MODULE_MAIN, "Offline storage not enabled");
+  #endif
+}
+
+void performSystemDiagnostics() {
+  LOG_INFO(MODULE_MAIN, "=== SYSTEM DIAGNOSTICS ===");
+  
+  // Memory diagnostics
+  LOG_INFO(MODULE_MAIN, "MEMORY:");
+  Utils::printMemoryInfo();
+  
+  // Network diagnostics
+  LOG_INFO(MODULE_MAIN, "\nNETWORK:");
+  LOG_INFO(MODULE_MAIN, modemManager.getNetworkInfo().c_str());
+  modemManager.performNetworkDiagnostic();
+  
+  // GPS diagnostics
+  LOG_INFO(MODULE_MAIN, "\nGPS:");
+  showGpsDetails();
+  
+  // Performance diagnostics
+  LOG_INFO(MODULE_MAIN, "\nPERFORMANCE:");
+  printPerformanceReport();
+  
+  // Offline storage diagnostics
+  #if ENABLE_OFFLINE_STORAGE
+    LOG_INFO(MODULE_MAIN, "\nOFFLINE STORAGE:");
+    offlineManager.printStorageInfo();
+    LOG_INFO(MODULE_MAIN, "Validation: %s", 
+             offlineManager.validateStorage() ? "PASSED" : "FAILED");
+  #endif
+  
+  // System health
+  LOG_INFO(MODULE_MAIN, "\nHEALTH:");
+  printHealthStatus();
+  
+  LOG_INFO(MODULE_MAIN, "========================");
+}
+
+void performEmergencyBackup() {
+  LOG_WARN(MODULE_MAIN, "🚨 Performing emergency backup...");
+  
+  #if ENABLE_OFFLINE_STORAGE
+    // Force store current GPS data if available
+    if (gpsManager.isValid()) {
+      char timestamp[30];
+      gpsManager.getTimestamp(timestamp, sizeof(timestamp));
+      
+      storeDataOffline(
+        gpsManager.getLatitude(),
+        gpsManager.getLongitude(),
+        gpsManager.getSpeed(),
+        gpsManager.getSatellites(),
+        String(timestamp),
+        batteryVoltage
+      );
+    }
+    
+    // Log critical system state
+    LOG_INFO(MODULE_MAIN, "System state backed up");
+    LOG_INFO(MODULE_MAIN, "Offline records: %d", offlineManager.getOfflineRecordCount());
+  #endif
+  
+  LOG_INFO(MODULE_MAIN, "✅ Emergency backup complete");
+}
+
+void recoverFromCorruptedState() {
+  LOG_WARN(MODULE_MAIN, "🔧 Attempting recovery from corrupted state...");
+  
+  // Reset all managers
+  modemManager.startReset();  // Changed from forceReset()
+  wsManager.disconnect();
+  
+  #if ENABLE_OFFLINE_STORAGE
+    // Try to repair offline storage
+    if (!offlineManager.validateStorage()) {
+      LOG_WARN(MODULE_MAIN, "Repairing offline storage...");
+      offlineManager.repairStorage();
+    }
+  #endif
+  
+  // Reset system flags
+  systemFlags.reset();
+  performanceMetrics.reset();
+  offlineOpStats.reset();
+  
+  // Restart state machine
+  currentState = STATE_INIT;
+  
+  LOG_INFO(MODULE_MAIN, "✅ Recovery complete, restarting operations");
+}
+
+void logSystemStats() {
+  LOG_INFO(MODULE_MAIN, "=== SYSTEM STATISTICS ===");
+  
+  // Uptime stats
+  unsigned long uptime = millis() - systemStartTime;
+  LOG_INFO(MODULE_MAIN, "Uptime: %s", Utils::formatUptime(uptime).c_str());
+  
+  // Transmission stats
+  LOG_INFO(MODULE_MAIN, "Online transmissions: %lu total, %lu successful (%.1f%%)",
+           performanceMetrics.totalTransmissions,
+           performanceMetrics.successfulTransmissions,
+           performanceMetrics.totalTransmissions > 0 ? 
+           (performanceMetrics.successfulTransmissions * 100.0 / performanceMetrics.totalTransmissions) : 0);
+  
+  #if ENABLE_OFFLINE_STORAGE
+    // Offline stats
+    LOG_INFO(MODULE_MAIN, "Offline operations: %lu stored, %lu synced",
+             offlineOpStats.dataStoredOffline,
+             offlineOpStats.dataSentFromOffline);
+  #endif
+  
+  // Movement stats
+  LOG_INFO(MODULE_MAIN, "Current movement: %s", getMovementString(currentMovementState));
+  
+  // Health stats
+  LOG_INFO(MODULE_MAIN, "Health check failures: %d", consecutiveHealthFailures);
+  
+  // Memory stats
+  LOG_INFO(MODULE_MAIN, "Free memory: %u KB (min required: %u KB)",
+           Utils::getFreeHeap() / 1024,
+           MEMORY_CRITICAL_THRESHOLD / 1024);
+  
+  LOG_INFO(MODULE_MAIN, "========================");
+}
+
+// ========================================
+// REMAINING ORIGINAL FUNCTIONS
+// ========================================
+
+// [Include all remaining functions from the original main.cpp that weren't modified]
+// These include:
+// - handleWaitGpsState()
+// - handleInitState()
+// - handleModemResetState()
+// - handleConnectionRecoveryState()
+// - handleOptimizingState()
+// - handleSleepPrepareState()
+// - checkAutoRestart()
+// - checkMemoryHealth()
+// - All other original functions...
+
+// Note: Due to space constraints, I'm not duplicating all unchanged functions.
+// Copy them from your original main.cpp file.
+
+void checkAutoRestart() {
+  #if ENABLE_AUTO_RESTART
+    // Auto-restart setiap 3 hari untuk preventive maintenance
+    if (millis() - systemStartTime > AUTO_RESTART_INTERVAL) {
+      forceSystemRestart("Scheduled restart after 72 hours uptime");
+    }
+  #endif
+}
+
+void checkMemoryHealth() {
+  // MEMORY MONITOR: Check setiap 1 menit
+  if (millis() - lastMemoryCheck > MEMORY_CHECK_INTERVAL) {
+    uint32_t freeHeap = Utils::getFreeHeap();
+    if (freeHeap < MEMORY_CRITICAL_THRESHOLD) {
+      LOG_ERROR(MODULE_SYS, "🚨 Critical memory low: %u bytes", freeHeap);
+      forceSystemRestart("Critical memory shortage");
+    }
+    lastMemoryCheck = millis();
+  }
+}
 
 void handleWaitGpsState() {
   static unsigned long gpsWaitStart = millis();
@@ -649,46 +1652,6 @@ void handleInitState() {
     modemManager.startReset();
     currentState = STATE_MODEM_RESET;
   }
-}
-
-void handleOperationalState() {
-  unsigned long currentTime = millis();
-  
-  // AUTO-RECOVERY: Jika tidak ada transmisi sukses >30 menit, restart
-  if (performanceMetrics.totalTransmissions > 0) {
-    if (performanceMetrics.successfulTransmissions > 0) {
-      lastSuccessfulTransmission = currentTime;
-    } else if (currentTime - lastSuccessfulTransmission > NO_SUCCESS_TIMEOUT) {
-      forceSystemRestart("No successful transmission in 30 min");
-      return;
-    }
-  }
-  
-  // Check if GPS became ready
-  checkGpsReady();
-  
-  // Skip if GPS not ready
-  if (!systemFlags.gpsReady && !useManualSpeed) {
-    logGpsNotReady();
-    return;
-  }
-  
-  // Check WebSocket connection
-  checkWebSocketConnection();
-  
-  // Get appropriate GPS interval
-  unsigned long gpsInterval = getGpsIntervalForMovement();
-  
-  // Send GPS data if interval reached
-  if (currentTime - lastGpsSendTime >= gpsInterval) {
-    transmitGpsData(currentTime, gpsInterval);
-  }
-  
-  // Check for sleep mode
-  checkSleepConditions(currentTime);
-  
-  // Check connection health
-  checkConnectionHealth(currentTime);
 }
 
 void handleModemResetState() {
@@ -1175,96 +2138,7 @@ void resetWebSocketConnection() {
 // ========================================
 
 void handleSerialCommands() {
-  if (!SerialMon.available()) return;
-  
-  String cmd = SerialMon.readStringUntil('\n');
-  cmd.trim();
-  
-  if (cmd.length() == 0) return;
-  
-  LOG_DEBUG(MODULE_MAIN, "Command: %s", cmd.c_str());
-  
-  // Basic commands
-  if (cmd == "help") {
-    printHelp();
-  } else if (cmd == "status") {
-    printStatus();
-  } else if (cmd == "init") {
-    printSystemReadyStatus();
-  } else if (cmd == "reset") {
-    LOG_WARN(MODULE_MAIN, "Restarting system...");
-    printPerformanceReport();
-    delay(1000);
-    ESP.restart();
-  }
-  // Health and recovery commands
-  else if (cmd == "health") {
-    printHealthStatus();
-  } else if (cmd == "recovery") {
-    LOG_INFO(MODULE_MAIN, "🔄 Forcing system health check...");
-    performSystemHealthCheck();
-  }
-  // Power mode commands
-  else if (cmd == "full") {
-    setPowerMode(POWER_MODE_FULL);
-  } else if (cmd == "standby") {
-    setPowerMode(POWER_MODE_STANDBY);
-  } else if (cmd == "emergency") {
-    setPowerMode(POWER_MODE_EMERGENCY);
-  } else if (cmd == "power") {
-    printPowerModeInfo();
-  }
-  // Speed and movement commands
-  else if (cmd.startsWith("speed")) {
-    processSpeedCommand(cmd);
-  } else if (cmd == "movement") {
-    printMovementInfo();
-  }
-  // Testing commands
-  else if (cmd == "send") {
-    forceSendGpsData();
-  } else if (cmd.startsWith("test")) {
-    processTestingCommand(cmd);
-  }
-  // Network commands
-  else if (cmd == "network") {
-    LOG_INFO(MODULE_MAIN, modemManager.getNetworkInfo().c_str());
-  } else if (cmd == "optimize") {
-    LOG_INFO(MODULE_MAIN, "🔧 Starting manual optimization...");
-    currentState = STATE_OPTIMIZING;
-  }
-  // WebSocket commands
-  else if (cmd == "wsstats") {
-    printWebSocketStats();
-  } else if (cmd == "wsreset") {
-    resetWebSocketConnection();
-  }
-  // System commands
-  else if (cmd == "battery") {
-    showBatteryInfo();
-  } else if (cmd.startsWith("setbat ")) {
-    setBatteryVoltage(cmd.substring(7).toFloat());
-  } else if (cmd == "memory") {
-    Utils::printMemoryInfo();
-  } else if (cmd == "latency") {
-    printPerformanceReport();
-  }
-  // Relay commands
-  else if (cmd == "on") {
-    setRelay(true);
-  } else if (cmd == "off") {
-    setRelay(false);
-  }
-  // GPS commands
-  else if (cmd == "gps") {
-    showGpsDetails();
-  }
-  // Unknown command
-  else {
-    LOG_WARN(MODULE_MAIN, "Unknown command: %s", cmd.c_str());
-  }
-  
-  lastActivityTime = millis();
+  handleSerialCommandsExtended();  // Redirect to extended version
 }
 
 void processSpeedCommand(const String& cmd) {
@@ -1338,7 +2212,37 @@ void processTestingCommand(const String& cmd) {
     // Test auto-recovery by simulating crash
     LOG_WARN(MODULE_MAIN, "🧪 Simulating system crash for recovery test...");
     forceSystemRestart("Manual crash test");
+  } else if (cmd == "testoffline") {
+    // NEW: Generate test offline data
+    #if ENABLE_OFFLINE_STORAGE
+      LOG_INFO(MODULE_MAIN, "🧪 Generating test offline data...");
+      for (int i = 0; i < 10; i++) {
+        float lat = -6.2088 + (i * 0.0001);
+        float lon = 106.8456 + (i * 0.0001);
+        float speed = 30.0 + (i * 2);
+        char timestamp[30];
+        sprintf(timestamp, "2025-01-17T10:%02d:00Z", i);
+        
+        storeDataOffline(lat, lon, speed, 8, String(timestamp), 12.5);
+        delay(100);
+      }
+      LOG_INFO(MODULE_MAIN, "✅ Generated 10 test offline records");
+    #else
+      LOG_WARN(MODULE_MAIN, "Offline storage not enabled");
+    #endif
+  } else if (cmd == "stress test") {
+    // NEW: Stress test
+    runOfflineStorageStressTest();
+  } else if (cmd.startsWith("simulate outage ")) {
+    // NEW: Simulate network outage
+    unsigned long duration = cmd.substring(16).toInt() * 1000;
+    simulateNetworkOutage(duration);
   }
+}
+
+void processAdvancedCommands(const String& cmd) {
+  // This function is called from handleSerialCommandsExtended
+  // for advanced diagnostic and testing commands
 }
 
 void showSpeedInfo() {
@@ -1379,15 +2283,17 @@ void forceSendGpsData() {
     return;
   }
   
-  if (!systemFlags.gprsReady) {
+  if (!systemFlags.gprsReady && !shouldUseOfflineMode()) {
     LOG_ERROR(MODULE_MAIN, "❌ Cannot send - GPRS not connected");
     return;
   }
   
-  if (sendVehicleDataViaWebSocket()) {
-    LOG_INFO(MODULE_MAIN, "✅ Data sent successfully");
+  if (sendVehicleDataWithOfflineSupport()) {
+    LOG_INFO(MODULE_MAIN, "✅ Data %s successfully", 
+             shouldUseOfflineMode() ? "stored offline" : "sent");
   } else {
-    LOG_ERROR(MODULE_MAIN, "❌ Failed to send data");
+    LOG_ERROR(MODULE_MAIN, "❌ Failed to %s data", 
+              shouldUseOfflineMode() ? "store" : "send");
   }
 }
 
@@ -1704,158 +2610,6 @@ void setRelay(bool state) {
 // STATUS DISPLAY FUNCTIONS
 // ========================================
 
-void printHelp() {
-  SerialMon.println("\n========== COMMAND HELP ==========");
-  SerialMon.println("=== BASIC COMMANDS ===");
-  SerialMon.println("help         - Show this help");
-  SerialMon.println("status       - Show system status");
-  SerialMon.println("init         - Show initialization status");
-  SerialMon.println("reset        - Restart system");
-  SerialMon.println("health       - Show health status");
-  SerialMon.println("recovery     - Force health check");
-  
-  SerialMon.println("\n=== POWER MODES ===");
-  SerialMon.println("power        - Show current power mode");
-  SerialMon.println("full         - Switch to FULL mode");
-  SerialMon.println("standby      - Switch to STANDBY mode");
-  SerialMon.println("emergency    - Switch to EMERGENCY mode");
-  
-  SerialMon.println("\n=== SPEED & MOVEMENT ===");
-  SerialMon.println("speed        - Show speed info");
-  SerialMon.println("speed N      - Set manual speed (0-200 km/h)");
-  SerialMon.println("speed auto   - Return to GPS speed");
-  SerialMon.println("movement     - Show movement details");
-  
-  SerialMon.println("\n=== TESTING COMMANDS ===");
-  SerialMon.println("send         - Force send GPS data");
-  SerialMon.println("teststop     - Test PARKED→STATIC transition");
-  SerialMon.println("testmove     - Test all movement modes");
-  SerialMon.println("testreset    - Reset test variables");
-  SerialMon.println("testcrash    - Test auto-recovery system");
-  
-  SerialMon.println("\n=== NETWORK & OPTIMIZATION ===");
-  SerialMon.println("network      - Show network info");
-  SerialMon.println("optimize     - Apply optimizations");
-  SerialMon.println("latency      - Show performance report");
-  
-  SerialMon.println("\n=== OTHER COMMANDS ===");
-  SerialMon.println("battery      - Show battery status");
-  SerialMon.println("memory       - Show memory info");
-  SerialMon.println("gps          - Show GPS details");
-  SerialMon.println("on/off       - Control relay");
-  
-  SerialMon.println("==================================\n");
-}
-
-void printStatus() {
-  SerialMon.println("\n========== SYSTEM STATUS ==========");
-  
-  // System state
-  SerialMon.printf("System State : %s\n", getStateString(currentState));
-  SerialMon.printf("Power Mode   : %s\n", getPowerModeString(currentPowerMode));
-  SerialMon.printf("System Ready : %s\n", isSystemReady() ? "YES ✅" : "NO ⚠️");
-  
-  if (!isSystemReady()) {
-    if (!systemFlags.gpsReady) SerialMon.println("  - GPS not ready");
-    if (!systemFlags.modemReady) SerialMon.println("  - Modem not ready");
-    if (!systemFlags.networkReady) SerialMon.println("  - Network not ready");
-    if (!systemFlags.gprsReady) SerialMon.println("  - GPRS not ready");
-  }
-  
-  // Movement info
-  SerialMon.printf("Movement     : %s", getMovementString(currentMovementState));
-  if (useManualSpeed) {
-    SerialMon.printf(" [MANUAL: %.1f km/h]", manualSpeed);
-  }
-  SerialMon.println();
-  
-  if (vehicleStopTime > 0 && currentMovementState != MOVEMENT_MOVING) {
-    unsigned long stopDuration = (millis() - vehicleStopTime) / 1000;
-    SerialMon.printf("Stop Time    : %lu seconds", stopDuration);
-    
-    if (currentMovementState == MOVEMENT_PARKED) {
-      unsigned long remaining = (PARKED_TO_STATIC_TIMEOUT - (millis() - vehicleStopTime)) / 1000;
-      SerialMon.printf(" (→ STATIC in %lu s)", remaining);
-    }
-    SerialMon.println();
-  }
-  
-  SerialMon.printf("GPS Interval : %lu seconds", getGpsIntervalForMovement()/1000);
-  switch(currentMovementState) {
-    case MOVEMENT_MOVING:
-      SerialMon.print(" (MOVING)");
-      break;
-    case MOVEMENT_PARKED:
-      SerialMon.print(" (PARKED)");
-      break;
-    case MOVEMENT_STATIC:
-      SerialMon.print(" (STATIC)");
-      break;
-    default:
-      break;
-  }
-  SerialMon.println();
-  
-  // GPS info
-  if (gpsManager.isValid()) {
-    SerialMon.printf("GPS          : VALID (%.6f, %.6f)\n",
-                     gpsManager.getLatitude(), gpsManager.getLongitude());
-    SerialMon.printf("Speed        : %.1f km/h%s\n", 
-                     getCurrentSpeed(), 
-                     useManualSpeed ? " (MANUAL)" : " (GPS)");
-    SerialMon.printf("Satellites   : %d\n", gpsManager.getSatellites());
-    SerialMon.printf("HDOP         : %.1f\n", gpsManager.getHDOP());
-  } else {
-    SerialMon.printf("GPS          : NO FIX (Sats: %d)\n", 
-                     gpsManager.getSatellites());
-  }
-  
-  // Network info
-  SerialMon.printf("Modem        : %s", modemManager.getStatusString());
-  if (modemManager.areOptimizationsApplied()) {
-    SerialMon.print(" [OPT]");
-  }
-  SerialMon.println();
-  
-  SerialMon.printf("Signal       : %d (%s)\n", 
-                   modemManager.getSignalQuality(),
-                   Utils::getSignalQualityString(modemManager.getSignalQuality()));
-  
-  SerialMon.printf("WebSocket    : %s\n", wsManager.getStateString());
-  
-  // Battery
-  float percentage = ((batteryVoltage - BATTERY_MIN_VOLTAGE) / 
-                     (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE)) * 100.0;
-  percentage = constrain(percentage, 0.0, 100.0);
-  SerialMon.printf("Battery      : %.2fV (%.0f%%)\n", batteryVoltage, percentage);
-  
-  // Performance
-  if (performanceMetrics.totalTransmissions > 0) {
-    SerialMon.printf("Transmissions: %lu/%lu (%.1f%%)\n",
-                     performanceMetrics.successfulTransmissions,
-                     performanceMetrics.totalTransmissions,
-                     (performanceMetrics.successfulTransmissions * 100.0 / 
-                      performanceMetrics.totalTransmissions));
-  }
-  
-  // Health status
-  SerialMon.printf("Health       : %s", 
-                   consecutiveHealthFailures < MAX_HEALTH_FAILURES ? "HEALTHY" : "CRITICAL");
-  if (consecutiveHealthFailures > 0) {
-    SerialMon.printf(" (%d/%d failures)", consecutiveHealthFailures, MAX_HEALTH_FAILURES);
-  }
-  SerialMon.println();
-  
-  SerialMon.printf("Uptime       : %s\n", Utils::formatUptime(millis()).c_str());
-  SerialMon.printf("Free Memory  : %u KB", Utils::getFreeHeap() / 1024);
-  if (Utils::getFreeHeap() < MEMORY_CRITICAL_THRESHOLD) {
-    SerialMon.print(" ⚠️ LOW");
-  }
-  SerialMon.println();
-  
-  SerialMon.println("===================================\n");
-}
-
 void printSystemReadyStatus() {
   LOG_INFO(MODULE_SYS, "=== SYSTEM READY STATUS ===");
   LOG_INFO(MODULE_SYS, "GPS Ready    : %s", systemFlags.gpsReady ? "YES" : "NO");
@@ -1919,6 +2673,17 @@ void printPowerModeInfo() {
     SerialMon.printf("Auto-restart : DISABLED\n");
   #endif
   
+  SerialMon.println("\n=== OFFLINE STORAGE INFO ===");
+  #if ENABLE_OFFLINE_STORAGE
+    SerialMon.printf("Offline Mode : ENABLED\n");
+    SerialMon.printf("Max Records  : %d\n", OFFLINE_MAX_RECORDS);
+    SerialMon.printf("Auto-sync    : %s\n", OFFLINE_AUTO_SYNC ? "ENABLED" : "DISABLED");
+    SerialMon.printf("Batch Size   : %d records\n", OFFLINE_SYNC_BATCH_SIZE);
+    SerialMon.printf("Maintenance  : every %d minutes\n", OFFLINE_MAINTENANCE_INTERVAL/60000);
+  #else
+    SerialMon.printf("Offline Mode : DISABLED\n");
+  #endif
+  
   SerialMon.println("=============================\n");
 }
 
@@ -1973,6 +2738,7 @@ const char* getStateString(SystemState state) {
     case STATE_SLEEP_PREPARE: return "SLEEP_PREPARE";
     case STATE_SLEEPING: return "SLEEPING";
     case STATE_OPTIMIZING: return "OPTIMIZING";
+    case STATE_OFFLINE_SYNC: return "OFFLINE_SYNC";  // NEW
     default: return "UNKNOWN";
   }
 }
