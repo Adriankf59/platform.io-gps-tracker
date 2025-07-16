@@ -1,4 +1,4 @@
-// WebSocketManager.h - Enhanced WebSocket Manager with Auto-Recovery (FIXED)
+// WebSocketManager.h - Enhanced WebSocket Manager with Auto-Recovery and IMU Support
 #ifndef WEBSOCKET_MANAGER_H
 #define WEBSOCKET_MANAGER_H
 
@@ -389,7 +389,7 @@ public:
   }
 };
 
-// WebSocket Manager Class (Enhanced with Auto-Recovery)
+// WebSocket Manager Class (Enhanced with Auto-Recovery and IMU Support)
 class WebSocketManager {
 private:
   SimpleWebSocketClient* wsClient;
@@ -896,6 +896,111 @@ public:
     }
   }
   
+  // NEW: Send raw JSON data (for IMU enhanced payloads)
+  bool sendRawData(const char* jsonData) {
+    if (!isReady()) {
+      LOG_ERROR(MODULE_WS, "WebSocket not ready");
+      stats.consecutiveFailures++;
+      return false;
+    }
+    
+    LOG_DEBUG(MODULE_WS, "Sending raw data: %s", jsonData);
+    
+    // Start latency measurement
+    if (ENABLE_LATENCY_MONITORING) {
+      stats.lastTransmissionStart = millis();
+      stats.measuringLatency = true;
+    }
+    
+    // Send the data
+    wsClient->sendText(jsonData);
+    
+    stats.totalBytesSent += strlen(jsonData);
+    stats.totalMessages++;
+    stats.lastSuccessfulTransmission = millis();
+    stats.consecutiveFailures = 0;
+    
+    return true;
+  }
+  
+  // NEW: Send vehicle data with IMU information
+  bool sendVehicleDataWithImu(float lat, float lon, float speed, int satellites, 
+                             const String& timestamp, float battery,
+                             const String& positionSource, bool inBasement,
+                             const String& imuData) {
+    if (!isReady()) {
+      LOG_ERROR(MODULE_WS, "WebSocket not ready");
+      stats.consecutiveFailures++;
+      return false;
+    }
+    
+    // Start latency measurement
+    if (ENABLE_LATENCY_MONITORING) {
+      stats.lastTransmissionStart = millis();
+      stats.measuringLatency = true;
+    }
+    
+    // Create IMU enhanced JSON payload
+    StaticJsonDocument<512> doc;
+    
+    // Wrap in WebSocket message structure
+    doc["type"] = "items";
+    doc["collection"] = "vehicle_datas";
+    doc["action"] = "create";
+    
+    JsonObject data = doc.createNestedObject("data");
+    
+    // Standard GPS fields
+    char latStr[16], lonStr[16];
+    dtostrf(lat, 10, LATITUDE_PRECISION, latStr);
+    dtostrf(lon, 10, LONGITUDE_PRECISION, lonStr);
+    
+    data[SERVER_FIELD_LATITUDE] = latStr;
+    data[SERVER_FIELD_LONGITUDE] = lonStr;
+    data[SERVER_FIELD_SPEED] = speed;
+    data[SERVER_FIELD_SATELLITES] = satellites;
+    data[SERVER_FIELD_TIMESTAMP] = timestamp;
+    data[SERVER_FIELD_GPS_ID] = GPS_ID;
+    data[SERVER_FIELD_BATTERY_LEVEL] = battery;
+    
+    // IMU enhanced fields
+    data[SERVER_FIELD_POSITION_SOURCE] = positionSource;
+    data[SERVER_FIELD_BASEMENT_STATUS] = inBasement;
+    
+    // Parse and include IMU data if available
+    if (imuData != "null" && imuData.length() > 0) {
+      StaticJsonDocument<256> imuDoc;
+      DeserializationError error = deserializeJson(imuDoc, imuData);
+      if (!error) {
+        data[SERVER_FIELD_IMU_DATA] = imuDoc;
+      } else {
+        data[SERVER_FIELD_IMU_DATA] = nullptr;
+      }
+    } else {
+      data[SERVER_FIELD_IMU_DATA] = nullptr;
+    }
+    
+    // Optional fields
+    data[SERVER_FIELD_RPM] = nullptr;
+    data[SERVER_FIELD_FUEL_LEVEL] = nullptr;
+    data[SERVER_FIELD_IGNITION_STATUS] = nullptr;
+    
+    // Serialize and send
+    String output;
+    serializeJson(doc, output);
+    
+    LOG_DEBUG(MODULE_WS, "Sending IMU enhanced data: %s", output.c_str());
+    
+    wsClient->sendText(output);
+    
+    stats.totalBytesSent += output.length();
+    stats.totalMessages++;
+    stats.lastSuccessfulTransmission = millis();
+    stats.consecutiveFailures = 0;
+    
+    return true;
+  }
+  
   // OPTIMIZED: Send vehicle data with server-compatible format
   bool sendVehicleData(float lat, float lon, float speed, int satellites, 
                        const String& timestamp, float battery = 12.5) {
@@ -960,6 +1065,10 @@ public:
         "}",
         latStr, lngStr, (int)speed, battery, satellites, timestamp.c_str()
       );
+    #elif DEFAULT_PAYLOAD_MODE == PAYLOAD_MODE_IMU_ENHANCED
+      // Use the IMU enhanced method instead
+      return sendVehicleDataWithImu(lat, lon, speed, satellites, timestamp, battery,
+                                   "GPS", false, "null");
     #else
       // Minimal payload for testing (~90 bytes)
       snprintf(payloadBuffer, sizeof(payloadBuffer),

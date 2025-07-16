@@ -1,4 +1,4 @@
-// Config.h - Optimized Configuration with Health Monitoring, Auto-Recovery, and Offline Storage
+// Config.h - Optimized Configuration with Health Monitoring, Auto-Recovery, Offline Storage, and IMU Support
 // 
 // TESTING MODE CHANGES:
 // 1. GPS interval: Updated movement detection (4 km/h threshold)
@@ -7,6 +7,7 @@
 // 4. Auto-recovery: System health checks every 5 minutes
 // 5. Preventive restart: Every 72 hours
 // 6. OFFLINE STORAGE: Auto-save GPS data when network unavailable
+// 7. IMU SUPPORT: MPU6050 for basement/indoor tracking
 //
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -16,6 +17,41 @@
 // ========================================
 #define TESTING_MODE true                        // Enable testing mode features
 #define TESTING_LOG_VERBOSE true                 // Verbose logging for testing
+
+// ========================================
+// IMU (MPU6050) CONFIGURATION (NEW)
+// ========================================
+#define ENABLE_IMU_SUPPORT true                  // Enable MPU6050 IMU support
+#define IMU_I2C_ADDRESS 0x68                     // MPU6050 I2C address (0x68 or 0x69)
+#define IMU_SDA_PIN 21                           // I2C SDA pin for MPU6050
+#define IMU_SCL_PIN 22                           // I2C SCL pin for MPU6050
+#define IMU_INTERRUPT_PIN 19                     // MPU6050 interrupt pin (optional)
+
+// IMU Sampling Configuration
+#define IMU_SAMPLE_RATE_GPS_VALID 1              // 1 Hz when GPS available
+#define IMU_SAMPLE_RATE_GPS_LOST 10              // 10 Hz when GPS lost (basement)
+#define IMU_SAMPLE_RATE_MOVING 20                // 20 Hz when actively moving
+#define IMU_CALIBRATION_SAMPLES 100              // Samples for calibration
+
+// IMU Dead Reckoning Parameters
+#define IMU_MOVEMENT_THRESHOLD 0.15              // g-force threshold for movement detection
+#define IMU_STATIONARY_THRESHOLD 0.05           // g-force threshold for stationary
+#define IMU_HEADING_FILTER_ALPHA 0.8            // Complementary filter coefficient
+#define IMU_MAX_POSITION_ERROR 500               // Max position error in meters
+#define IMU_POSITION_RESET_TIMEOUT 300000        // Reset position after 5 minutes
+
+// IMU Data Transmission
+#define IMU_SEND_RAW_DATA true                   // Send raw accelerometer/gyro data
+#define IMU_SEND_PROCESSED_DATA true             // Send processed position estimates
+#define IMU_BATCH_SIZE 10                        // IMU samples per transmission
+#define IMU_COMPRESS_DATA true                   // Compress IMU data for bandwidth
+
+// Basement Detection Parameters
+#define BASEMENT_ENTRY_THRESHOLD -2.0            // Z-accel change for basement entry
+#define BASEMENT_GPS_LOSS_TIME 5000              // Time after GPS loss to confirm basement
+#define BASEMENT_EXIT_GPS_TIME 10000             // GPS stable time to confirm exit
+
+// [Previous Config.h content continues below...]
 
 // ========================================
 // OFFLINE DATA STORAGE CONFIGURATION (NEW)
@@ -127,6 +163,11 @@
 #define SERVER_FIELD_TIMESTAMP "timestamp"              // Server expects: timestamp (ISO string)
 #define SERVER_FIELD_GPS_ID "gps_id"                    // Server expects: gps_id (string)
 
+// IMU fields for server (NEW)
+#define SERVER_FIELD_IMU_DATA "imu_data"                // IMU data object
+#define SERVER_FIELD_POSITION_SOURCE "position_source"  // GPS/IMU/FUSION
+#define SERVER_FIELD_BASEMENT_STATUS "basement_status"  // true/false
+
 // Optional fields (can be null for optimization)
 #define SERVER_FIELD_RPM "rpm"                          // Server allows: null
 #define SERVER_FIELD_FUEL_LEVEL "fuel_level"            // Server allows: null
@@ -136,13 +177,15 @@
 #define PAYLOAD_MODE_FULL 0                             // Include all fields
 #define PAYLOAD_MODE_ESSENTIAL 1                        // Only required fields
 #define PAYLOAD_MODE_MINIMAL 2                          // Absolute minimum fields
-#define DEFAULT_PAYLOAD_MODE PAYLOAD_MODE_ESSENTIAL     // Balanced approach
+#define PAYLOAD_MODE_IMU_ENHANCED 3                     // Include IMU data (NEW)
+#define DEFAULT_PAYLOAD_MODE PAYLOAD_MODE_IMU_ENHANCED  // Changed to include IMU
 
 // Data type optimization for server compatibility
 #define LATITUDE_PRECISION 5                            // Decimal places for latitude (string)
 #define LONGITUDE_PRECISION 5                           // Decimal places for longitude (string)
 #define SPEED_PRECISION 1                               // Decimal places for speed
 #define BATTERY_PRECISION 1                             // Decimal places for battery level
+#define IMU_PRECISION 3                                 // Decimal places for IMU data
 
 // ========================================
 // KONFIGURASI JARINGAN (OPTIMIZED FOR TESTING)
@@ -191,6 +234,19 @@
 \"" SERVER_FIELD_SATELLITES "\":%d,\
 \"" SERVER_FIELD_TIMESTAMP "\":\"%s\",\
 \"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\"\
+}"
+
+// IMU Enhanced payload template (NEW)
+#define IMU_ENHANCED_PAYLOAD_TEMPLATE "{\
+\"" SERVER_FIELD_LATITUDE "\":\"%s\",\
+\"" SERVER_FIELD_LONGITUDE "\":\"%s\",\
+\"" SERVER_FIELD_SPEED "\":%.1f,\
+\"" SERVER_FIELD_SATELLITES "\":%d,\
+\"" SERVER_FIELD_TIMESTAMP "\":\"%s\",\
+\"" SERVER_FIELD_GPS_ID "\":\"" GPS_ID "\",\
+\"" SERVER_FIELD_POSITION_SOURCE "\":\"%s\",\
+\"" SERVER_FIELD_BASEMENT_STATUS "\":%s,\
+\"" SERVER_FIELD_IMU_DATA "\":%s\
 }"
 
 // Full payload template (all fields including nullables)
@@ -279,6 +335,7 @@
 #define MODULE_PERF "PERF"               // Modul performance monitoring
 #define MODULE_HEALTH "HEALTH"           // Modul system health monitoring
 #define MODULE_OFFLINE "OFFLINE"         // Modul offline data management
+#define MODULE_IMU "IMU"                 // Modul IMU/MPU6050 (NEW)
 
 // ========================================
 // FITUR OPSIONAL (TESTING MODE)
@@ -332,7 +389,7 @@
 // ========================================
 // PAYLOAD SIZE OPTIMIZATION
 // ========================================
-#define MAX_PAYLOAD_SIZE 256                     // Reduced from 512 to 256 bytes
+#define MAX_PAYLOAD_SIZE 512                     // Increased for IMU data
 #define ENABLE_PAYLOAD_COMPRESSION false         // Disable compression (server may not support)
 
 // Expected payload sizes for different modes:
@@ -340,6 +397,7 @@
 // FULL: ~180 bytes  
 // MINIMAL: ~90 bytes
 // OFFLINE: ~120 bytes (compressed format)
+// IMU_ENHANCED: ~300-400 bytes (with IMU data)
 
 // ========================================
 // ADVANCED OPTIMIZATION FEATURES
@@ -374,6 +432,7 @@
 #define DEBUG_NETWORK_QUALITY true               // Log network quality metrics
 #define DEBUG_PAYLOAD_SIZE true                  // Log payload size for optimization
 #define DEBUG_WEBSOCKET_FRAMES true              // Log WebSocket frame details
+#define DEBUG_IMU_DATA false                     // Log IMU data (verbose!)
 
 // Debug mode configuration
 #define DEBUG_MODE true                          // Enable debug mode for Logger
@@ -386,6 +445,7 @@
 #define ENABLE_PERFORMANCE_COMMANDS true         // Enable performance testing commands
 #define LOG_EVERY_GPS_UPDATE false               // Log every GPS update (verbose)
 #define ENABLE_MANUAL_SPEED_TESTING true         // Enable manual speed input for testing
+#define ENABLE_IMU_SIMULATION true               // Enable IMU simulation commands
 
 // ========================================
 // VALIDATION MACROS
@@ -411,6 +471,10 @@
   #warning "OFFLINE_MAX_RECORDS very high, may cause memory issues"
 #endif
 
+#if ENABLE_IMU_SUPPORT && IMU_SAMPLE_RATE_MOVING > 50
+  #warning "IMU_SAMPLE_RATE_MOVING very high, may impact performance"
+#endif
+
 // ========================================
 // PAYLOAD CREATION HELPERS
 // ========================================
@@ -427,6 +491,10 @@
 #define CREATE_OFFLINE_PAYLOAD(lat_str, lng_str, speed_val, sat_val, battery_val, timestamp_val, timestamp_str) \
   sprintf(payload_buffer, OFFLINE_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, sat_val, battery_val, timestamp_val, timestamp_str)
 
+// NEW: IMU Enhanced payload helper
+#define CREATE_IMU_PAYLOAD(lat_str, lng_str, speed_val, sat_val, timestamp_str, source_str, basement_bool, imu_json) \
+  sprintf(payload_buffer, IMU_ENHANCED_PAYLOAD_TEMPLATE, lat_str, lng_str, speed_val, sat_val, timestamp_str, source_str, basement_bool ? "true" : "false", imu_json)
+
 // ========================================
 // CATATAN PENGEMBANGAN (UPDATED)
 // ========================================
@@ -436,6 +504,7 @@
 // 4. Performance optimization: Better error handling, connection recovery
 // 5. Memory management: Critical threshold monitoring, leak prevention
 // 6. OFFLINE STORAGE: Auto-save GPS data when network unavailable, auto-sync when available
+// 7. IMU SUPPORT: MPU6050 for basement/indoor tracking with dead reckoning
 // 
 // Target untuk production:
 // - Reliable 24/7 operation dengan auto-recovery
@@ -444,5 +513,6 @@
 // - Memory leak prevention dan health monitoring
 // - Preventive maintenance dengan scheduled restart
 // - Seamless offline/online operation dengan data integrity
+// - Indoor/basement tracking dengan IMU sensor fusion
 
 #endif // CONFIG_H
