@@ -65,26 +65,26 @@ bool ModemManager::applyNetworkOptimizations() {
   
   LOG_INFO(MODULE_MODEM, "🚀 Menerapkan optimasi jaringan untuk latensi rendah...");
   
-  // 1. Force LTE-Only Mode
-  LOG_DEBUG(MODULE_MODEM, "Setting LTE-only mode...");
-  sendATCommand("AT+CNMP=38");
+  // 1. Set network mode to auto (allow fallback)
+  LOG_DEBUG(MODULE_MODEM, "Setting network mode to auto...");
+  sendATCommand("AT+CNMP=2"); // Auto mode (2G/3G/4G)
   if (!waitForATResponse(3000)) {
-    LOG_WARN(MODULE_MODEM, "⚠️ Gagal set LTE-only mode");
+    LOG_WARN(MODULE_MODEM, "⚠️ Gagal set network mode");
   } else {
-    LOG_INFO(MODULE_MODEM, "✅ LTE-only mode diaktifkan");
-    netOptStatus.lteOnlyMode = true;
+    LOG_INFO(MODULE_MODEM, "✅ Network mode auto diaktifkan");
+    netOptStatus.lteOnlyMode = false;
   }
   
   Utils::safeDelay(1000);
   
-  // 2. Enable All LTE Bands
-  LOG_DEBUG(MODULE_MODEM, "Enabling all LTE bands...");
-  sendATCommand("AT+CBAND=\"ALL\"");
+  // 2. Use default bands for better compatibility
+  LOG_DEBUG(MODULE_MODEM, "Using default network bands...");
+  sendATCommand("AT+CBAND=\"DEFAULT\"");
   if (!waitForATResponse(2000)) {
-    LOG_WARN(MODULE_MODEM, "⚠️ Gagal enable all LTE bands");
+    LOG_WARN(MODULE_MODEM, "⚠️ Gagal set default bands");
   } else {
-    LOG_INFO(MODULE_MODEM, "✅ All LTE bands enabled");
-    netOptStatus.allBandsEnabled = true;
+    LOG_INFO(MODULE_MODEM, "✅ Default bands enabled");
+    netOptStatus.allBandsEnabled = false;
   }
   
   Utils::safeDelay(500);
@@ -173,6 +173,9 @@ bool ModemManager::waitForATResponse(unsigned long timeout) {
 // Tunggu koneksi network dengan optimized polling
 bool ModemManager::waitForNetwork(unsigned long timeout) {
   unsigned long start = millis();
+  int consecutiveChecks = 0;
+  
+  LOG_INFO(MODULE_MODEM, "Menunggu registrasi jaringan (timeout: %lu ms)...", timeout);
   
   while (millis() - start < timeout) {
     if (modem.isNetworkConnected()) {
@@ -181,17 +184,34 @@ bool ModemManager::waitForNetwork(unsigned long timeout) {
       // Apply optimizations as soon as network is connected
       applyNetworkOptimizations();
       
+      LOG_INFO(MODULE_MODEM, "✅ Jaringan terhubung setelah %lu ms", millis() - start);
       return true;
     }
-    Utils::safeDelay(200); // Faster polling for quicker detection
     
-    // Update signal quality selama menunggu
-    int csq = modem.getSignalQuality();
-    if (csq != 99) {
-      LOG_DEBUG(MODULE_MODEM, "Signal quality: %d", csq);
+    // Update signal quality setiap 2 detik
+    if (consecutiveChecks % 10 == 0) { // Every 2 seconds (10 * 200ms)
+      int csq = modem.getSignalQuality();
+      if (csq != 99) {
+        LOG_DEBUG(MODULE_MODEM, "Signal quality: %d", csq);
+      }
+      
+      // Check network registration status
+      sendATCommand("AT+CREG?");
+      String response = readATResponse(1000);
+      if (response.indexOf("+CREG: 0,1") >= 0 || response.indexOf("+CREG: 0,5") >= 0) {
+        LOG_DEBUG(MODULE_MODEM, "Network registered");
+      } else if (response.indexOf("+CREG: 0,2") >= 0) {
+        LOG_DEBUG(MODULE_MODEM, "Searching for network...");
+      } else if (response.indexOf("+CREG: 0,0") >= 0) {
+        LOG_DEBUG(MODULE_MODEM, "Not registered");
+      }
     }
+    
+    Utils::safeDelay(200); // Faster polling for quicker detection
+    consecutiveChecks++;
   }
   
+  LOG_ERROR(MODULE_MODEM, "❌ Timeout menunggu jaringan setelah %lu ms", timeout);
   return false;
 }
 
@@ -238,12 +258,22 @@ bool ModemManager::connectGprs() {
     Utils::safeDelay(500); // Reduced delay
   }
   
+  // Configure APN explicitly
+  LOG_INFO(MODULE_MODEM, "Mengkonfigurasi APN: %s", APN);
+  sendATCommand("AT+CGDCONT=1,\"IP\",\"" + String(APN) + "\"");
+  if (!waitForATResponse(2000)) {
+    LOG_WARN(MODULE_MODEM, "⚠️ Gagal konfigurasi APN");
+  }
+  
+  Utils::safeDelay(1000);
+  
   // Apply optimizations before connecting
   if (!optimizationsApplied) {
     applyNetworkOptimizations();
   }
   
   // Connect with optimized APN
+  LOG_INFO(MODULE_MODEM, "Menghubungkan ke GPRS...");
   bool connected = modem.gprsConnect(APN, "", "");
   
   if (connected) {
@@ -258,6 +288,7 @@ bool ModemManager::connectGprs() {
     }
   }
   
+  LOG_ERROR(MODULE_MODEM, "❌ Gagal koneksi GPRS");
   return connected;
 }
 
@@ -319,15 +350,18 @@ bool ModemManager::setup() {
   // Update SIM info
   updateSimInfo();
   
+  // Auto-configure APN based on operator
+  configureAPNByOperator();
+  
   // Tunggu network dengan reduced timeout
   LOG_INFO(MODULE_MODEM, "Menunggu koneksi jaringan...");
   
   bool networkConnected = Utils::retryOperation(
     MODULE_MODEM, 
     "koneksi jaringan",
-    [this]() { return waitForNetwork(10000); }, // Reduced from 15000 to 10000
-    2, // Reduced from 3 to 2 retries
-    2000 // Reduced delay
+    [this]() { return waitForNetwork(30000); }, // Increased from 10000 to 30000 for better network registration
+    3, // Increased from 2 to 3 retries
+    5000 // Increased delay between retries
   );
   
   if (!networkConnected) {
@@ -736,34 +770,73 @@ String ModemManager::getPerformanceReport() const {
   return report;
 }
 
-// Network diagnostic
+// Enhanced network diagnostic function
 bool ModemManager::performNetworkDiagnostic() {
-  LOG_INFO(MODULE_MODEM, "Performing network diagnostic...");
+  LOG_INFO(MODULE_MODEM, "🔍 Memulai diagnostik jaringan...");
   
-  // 1. Check registration
-  sendATCommand("AT+CREG?");
-  String response = readATResponse(1000);
-  if (response.indexOf("+CREG: 0,1") < 0 && response.indexOf("+CREG: 0,5") < 0) {
-    LOG_ERROR(MODULE_MODEM, "Network registration failed");
+  // 1. Check SIM status
+  LOG_DEBUG(MODULE_MODEM, "1. Memeriksa status SIM...");
+  if (!checkSimCard()) {
+    LOG_ERROR(MODULE_MODEM, "❌ SIM card bermasalah");
     return false;
   }
   
   // 2. Check signal quality
-  int signal = getSignalQuality();
-  if (signal < 5 || signal == 99) {
-    LOG_ERROR(MODULE_MODEM, "Signal too weak: %d", signal);
-    return false;
+  LOG_DEBUG(MODULE_MODEM, "2. Memeriksa kualitas sinyal...");
+  int csq = modem.getSignalQuality();
+  LOG_INFO(MODULE_MODEM, "Signal Quality: %d (0-31, semakin tinggi semakin baik)", csq);
+  
+  if (csq < 10) {
+    LOG_WARN(MODULE_MODEM, "⚠️ Sinyal lemah, coba pindah ke area yang lebih baik");
+  } else if (csq > 20) {
+    LOG_INFO(MODULE_MODEM, "✅ Sinyal kuat");
   }
   
-  // 3. Check PDP context
-  sendATCommand("AT+CGACT?");
-  response = readATResponse(1000);
-  if (response.indexOf("+CGACT: 1,1") < 0) {
-    LOG_ERROR(MODULE_MODEM, "PDP context not active");
-    return false;
+  // 3. Check network registration
+  LOG_DEBUG(MODULE_MODEM, "3. Memeriksa registrasi jaringan...");
+  sendATCommand("AT+CREG?");
+  String response = readATResponse(2000);
+  
+  if (response.indexOf("+CREG: 0,1") >= 0) {
+    LOG_INFO(MODULE_MODEM, "✅ Terdaftar di jaringan lokal");
+  } else if (response.indexOf("+CREG: 0,5") >= 0) {
+    LOG_INFO(MODULE_MODEM, "✅ Terdaftar di jaringan roaming");
+  } else if (response.indexOf("+CREG: 0,2") >= 0) {
+    LOG_WARN(MODULE_MODEM, "⚠️ Mencari jaringan...");
+  } else if (response.indexOf("+CREG: 0,0") >= 0) {
+    LOG_ERROR(MODULE_MODEM, "❌ Tidak terdaftar di jaringan");
+  } else {
+    LOG_ERROR(MODULE_MODEM, "❌ Status registrasi tidak diketahui: %s", response.c_str());
   }
   
-  LOG_INFO(MODULE_MODEM, "Network diagnostic passed");
+  // 4. Check operator
+  LOG_DEBUG(MODULE_MODEM, "4. Memeriksa operator...");
+  String operator_name = modem.getOperator();
+  LOG_INFO(MODULE_MODEM, "Operator: %s", operator_name.c_str());
+  
+  // 5. Check APN configuration
+  LOG_DEBUG(MODULE_MODEM, "5. Memeriksa konfigurasi APN...");
+  sendATCommand("AT+CGDCONT?");
+  response = readATResponse(2000);
+  LOG_INFO(MODULE_MODEM, "APN Config: %s", response.c_str());
+  
+  // 6. Test network connectivity
+  LOG_DEBUG(MODULE_MODEM, "6. Menguji konektivitas jaringan...");
+  if (modem.isNetworkConnected()) {
+    LOG_INFO(MODULE_MODEM, "✅ Jaringan terhubung");
+  } else {
+    LOG_ERROR(MODULE_MODEM, "❌ Jaringan tidak terhubung");
+  }
+  
+  // 7. Test GPRS connectivity
+  LOG_DEBUG(MODULE_MODEM, "7. Menguji konektivitas GPRS...");
+  if (modem.isGprsConnected()) {
+    LOG_INFO(MODULE_MODEM, "✅ GPRS terhubung");
+  } else {
+    LOG_WARN(MODULE_MODEM, "⚠️ GPRS tidak terhubung");
+  }
+  
+  LOG_INFO(MODULE_MODEM, "🔍 Diagnostik jaringan selesai");
   return true;
 }
 
@@ -838,3 +911,43 @@ void ModemManager::setPerformanceMonitoring(bool enable) {
 }
 
 // REMOVED: updateOptimizationStatus() - not declared in header
+
+// Auto-detect and configure APN based on operator
+bool ModemManager::configureAPNByOperator() {
+  LOG_INFO(MODULE_MODEM, "🔍 Mendeteksi operator untuk konfigurasi APN...");
+  
+  String operator_name = modem.getOperator();
+  String apn_to_use = APN; // Default APN
+  
+  // Auto-detect APN based on operator
+  if (operator_name.indexOf("TELKOMSEL") >= 0 || operator_name.indexOf("SIMPATI") >= 0 || operator_name.indexOf("AS") >= 0) {
+    apn_to_use = "internet";
+    LOG_INFO(MODULE_MODEM, "📱 Operator terdeteksi: Telkomsel, menggunakan APN: %s", apn_to_use.c_str());
+  } else if (operator_name.indexOf("INDOSAT") >= 0 || operator_name.indexOf("MENTARI") >= 0 || operator_name.indexOf("IM3") >= 0) {
+    apn_to_use = "internet";
+    LOG_INFO(MODULE_MODEM, "📱 Operator terdeteksi: Indosat, menggunakan APN: %s", apn_to_use.c_str());
+  } else if (operator_name.indexOf("XL") >= 0 || operator_name.indexOf("AXIS") >= 0) {
+    apn_to_use = "internet";
+    LOG_INFO(MODULE_MODEM, "📱 Operator terdeteksi: XL/Axis, menggunakan APN: %s", apn_to_use.c_str());
+  } else if (operator_name.indexOf("3") >= 0 || operator_name.indexOf("TRI") >= 0) {
+    apn_to_use = "3";
+    LOG_INFO(MODULE_MODEM, "📱 Operator terdeteksi: 3 (Tri), menggunakan APN: %s", apn_to_use.c_str());
+  } else if (operator_name.indexOf("SMARTFREN") >= 0) {
+    apn_to_use = "smartfren";
+    LOG_INFO(MODULE_MODEM, "📱 Operator terdeteksi: Smartfren, menggunakan APN: %s", apn_to_use.c_str());
+  } else {
+    LOG_WARN(MODULE_MODEM, "⚠️ Operator tidak dikenali: %s, menggunakan APN default: %s", operator_name.c_str(), apn_to_use.c_str());
+  }
+  
+  // Configure APN
+  LOG_INFO(MODULE_MODEM, "⚙️ Mengkonfigurasi APN: %s", apn_to_use.c_str());
+  sendATCommand("AT+CGDCONT=1,\"IP\",\"" + apn_to_use + "\"");
+  
+  if (waitForATResponse(3000)) {
+    LOG_INFO(MODULE_MODEM, "✅ APN berhasil dikonfigurasi");
+    return true;
+  } else {
+    LOG_ERROR(MODULE_MODEM, "❌ Gagal konfigurasi APN");
+    return false;
+  }
+}

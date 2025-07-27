@@ -148,7 +148,20 @@
 // KONFIGURASI JARINGAN (OPTIMIZED FOR TESTING)
 // ========================================
 // Konfigurasi APN untuk koneksi GPRS
-#define APN ""               // Kosongkan untuk auto-detect APN
+// Pilih salah satu sesuai operator SIM card Anda:
+#define APN "internet"        // APN untuk Telkomsel/Indosat/XL (auto-detect)
+// #define APN "telkomsel"    // APN khusus Telkomsel
+// #define APN "indosat"      // APN khusus Indosat
+// #define APN "xl"           // APN khusus XL
+// #define APN "3"            // APN untuk 3 (Tri)
+
+// APN Configuration untuk operator Indonesia:
+// Telkomsel: "internet" atau "telkomsel"
+// Indosat: "internet" atau "indosat"  
+// XL: "internet" atau "xl"
+// 3 (Tri): "3" atau "internet"
+// Smartfren: "smartfren"
+// Axis: "axis"
 
 // WebSocket Configuration (Optimized for testing realtime)
 #define WS_URL "ws://70.153.193.19/websocket"  // URL server WebSocket
@@ -164,9 +177,9 @@
 // ========================================
 // LTE Optimization
 #define ENABLE_LTE_OPTIMIZATION true             // Enable LTE-only optimizations
-#define LTE_ONLY_MODE true                       // Force LTE-only mode
-#define ENABLE_ALL_LTE_BANDS true                // Enable all available LTE bands
-#define DISABLE_FAST_DORMANCY true               // Disable fast dormancy for always-on
+#define LTE_ONLY_MODE false                      // Allow fallback to 3G/2G for better compatibility
+#define ENABLE_ALL_LTE_BANDS false               // Use default bands for better stability
+#define DISABLE_FAST_DORMANCY false              // Allow power saving for battery life
 
 // TCP/IP Optimization
 #define TCP_NODELAY true                         // Disable Nagle algorithm

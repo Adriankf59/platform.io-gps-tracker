@@ -149,6 +149,7 @@ public:
   int getBandInfo();                   // Get current LTE band
   bool testDataConnection();           // Quick data connection test
   void logOptimizationDetails();       // Log detailed optimization status
+  bool configureAPNByOperator();       // Auto-detect and configure APN based on operator
   
   // ===== DEBUGGING =====
   void sendATCommand(const String& command);
