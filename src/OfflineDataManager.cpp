@@ -355,12 +355,15 @@ bool OfflineDataManager::continueeSendingOfflineData() {
 }
 
 bool OfflineDataManager::sendNextBatch(int batchSize) {
-  // This function should be implemented to integrate with your WebSocket sending
-  // For now, it's a placeholder that simulates sending
+  if (currentSendIndex >= recordCount) {
+    LOG_DEBUG(MODULE_SYS, "📤 No more records to send");
+    return false;
+  }
   
-  LOG_DEBUG(MODULE_SYS, "📤 Sending batch starting from index %d", currentSendIndex);
+  LOG_INFO(MODULE_SYS, "📤 Sending batch starting from index %d (batch size: %d)", currentSendIndex, batchSize);
   
   int sent = 0;
+  int failed = 0;
   int maxSend = min(batchSize, recordCount - currentSendIndex);
   
   for (int i = 0; i < maxSend; i++) {
@@ -374,40 +377,53 @@ bool OfflineDataManager::sendNextBatch(int batchSize) {
       continue; // Skip already sent records
     }
     
-    // TODO: Integrate with your WebSocket sending function
-    // bool success = wsManager.sendVehicleData(
-    //     record.latitude, record.longitude, record.speed,
-    //     record.satellites, String(record.timestampStr), record.battery);
-    
-    // For now, simulate successful sending
-    bool success = true; // Replace with actual sending code
+    // Try to send via WebSocket
+    bool success = sendOfflineRecordViaWebSocket(
+      record.latitude, 
+      record.longitude, 
+      record.speed,
+      record.satellites, 
+      record.timestampStr, 
+      record.battery
+    );
     
     if (success) {
       record.sent = true;
       sent++;
       offlineStats.recordsSentSuccessfully++;
       
-      LOG_DEBUG(MODULE_SYS, "✅ Sent offline record %d: %.6f, %.6f", 
-                recordIndex, record.latitude, record.longitude);
+      LOG_DEBUG(MODULE_SYS, "✅ Sent offline record %d: %.6f, %.6f, speed: %.1f", 
+                recordIndex, record.latitude, record.longitude, record.speed);
     } else {
+      failed++;
       offlineStats.recordsSendFailed++;
-      LOG_WARN(MODULE_SYS, "❌ Failed to send offline record %d", recordIndex);
-      break; // Stop batch on first failure
+      LOG_WARN(MODULE_SYS, "❌ Failed to send offline record %d (attempt %d)", recordIndex, i+1);
+      
+      // If we have too many consecutive failures, stop the batch
+      if (failed >= 3) {
+        LOG_ERROR(MODULE_SYS, "❌ Too many consecutive failures, stopping batch");
+        break;
+      }
     }
     
     // Small delay between records to avoid overwhelming the connection
-    Utils::safeDelay(200);
+    Utils::safeDelay(300);
   }
   
   currentSendIndex += sent;
   offlineStats.lastSendTime = millis();
   
-  LOG_INFO(MODULE_SYS, "📤 Sent %d records, %d remaining", 
-           sent, recordCount - currentSendIndex);
+  LOG_INFO(MODULE_SYS, "📤 Batch result: %d sent, %d failed, %d remaining", 
+           sent, failed, recordCount - currentSendIndex);
   
   notifyDataSent(sent, recordCount - currentSendIndex);
   
-  return sent > 0;
+  // If all records in this batch were sent successfully, continue with next batch
+  if (sent > 0 && failed == 0 && currentSendIndex < recordCount) {
+    return true; // Continue sending
+  }
+  
+  return sent > 0; // Return true if any records were sent
 }
 
 void OfflineDataManager::stopSending() {
@@ -416,6 +432,105 @@ void OfflineDataManager::stopSending() {
     sendInProgress = false;
     currentStatus = OFFLINE_STATUS_READY;
   }
+}
+
+// Auto-sync offline data when network becomes available
+bool OfflineDataManager::autoSyncOfflineData() {
+  if (!isInitialized || !isEnabled) {
+    LOG_DEBUG(MODULE_SYS, "📤 Auto-sync disabled - not initialized or enabled");
+    return false;
+  }
+  
+  if (recordCount == 0) {
+    LOG_DEBUG(MODULE_SYS, "📤 No offline data to sync");
+    return true;
+  }
+  
+  if (currentSendIndex >= recordCount) {
+    LOG_DEBUG(MODULE_SYS, "📤 All offline data already sent");
+    return true;
+  }
+  
+  LOG_INFO(MODULE_SYS, "🔄 Starting auto-sync of %d offline records", recordCount - currentSendIndex);
+  
+  currentStatus = OFFLINE_STATUS_SENDING;
+  sendInProgress = true;
+  lastSendAttempt = millis();
+  
+  // Send in batches with smart retry logic
+  int totalSent = 0;
+  int consecutiveFailures = 0;
+  const int maxConsecutiveFailures = 3;
+  const int maxBatchesPerSync = 5; // Limit batches per sync session
+  
+  for (int batch = 0; batch < maxBatchesPerSync; batch++) {
+    if (currentSendIndex >= recordCount) {
+      LOG_INFO(MODULE_SYS, "✅ All offline data synced successfully");
+      break;
+    }
+    
+    LOG_DEBUG(MODULE_SYS, "📤 Sending batch %d/%d", batch + 1, maxBatchesPerSync);
+    
+    bool batchSuccess = sendNextBatch(OFFLINE_BATCH_SEND_SIZE);
+    
+    if (batchSuccess) {
+      consecutiveFailures = 0;
+      totalSent += OFFLINE_BATCH_SEND_SIZE;
+      
+      // Small delay between batches
+      Utils::safeDelay(OFFLINE_SEND_INTERVAL);
+    } else {
+      consecutiveFailures++;
+      LOG_WARN(MODULE_SYS, "⚠️ Batch %d failed (consecutive failures: %d)", batch + 1, consecutiveFailures);
+      
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        LOG_ERROR(MODULE_SYS, "❌ Too many consecutive failures, stopping auto-sync");
+        break;
+      }
+      
+      // Longer delay after failure
+      Utils::safeDelay(OFFLINE_SEND_INTERVAL * 2);
+    }
+  }
+  
+  // Update status
+  if (currentSendIndex >= recordCount) {
+    currentStatus = OFFLINE_STATUS_READY;
+    sendInProgress = false;
+    LOG_INFO(MODULE_SYS, "✅ Auto-sync completed: %d records sent", totalSent);
+    return true;
+  } else {
+    currentStatus = OFFLINE_STATUS_READY;
+    sendInProgress = false;
+    LOG_WARN(MODULE_SYS, "⚠️ Auto-sync incomplete: %d records sent, %d remaining", 
+             totalSent, recordCount - currentSendIndex);
+    return false;
+  }
+}
+
+// Check if auto-sync should be triggered
+bool OfflineDataManager::shouldTriggerAutoSync() {
+  if (!isInitialized || !isEnabled || recordCount == 0) {
+    return false;
+  }
+  
+  // Check if we have unsent data
+  if (currentSendIndex >= recordCount) {
+    return false;
+  }
+  
+  // Check if enough time has passed since last attempt
+  unsigned long timeSinceLastAttempt = millis() - lastSendAttempt;
+  if (timeSinceLastAttempt < OFFLINE_SYNC_INTERVAL) {
+    return false;
+  }
+  
+  // Check if we're not already sending
+  if (sendInProgress) {
+    return false;
+  }
+  
+  return true;
 }
 
 // ===== DATA MANAGEMENT =====

@@ -477,6 +477,12 @@ void loop() {
   // NEW: Network availability check
   checkNetworkAvailability();
   
+  // NEW: Check for offline data sync opportunity
+  if (offlineManager.shouldTriggerAutoSync() && networkAvailable && wsManager.isReady()) {
+    LOG_INFO(MODULE_MAIN, "🔄 Network available, triggering offline data sync...");
+    offlineManager.autoSyncOfflineData();
+  }
+  
   // Always update GPS
   gpsManager.update();
   
@@ -1048,9 +1054,29 @@ void handleSerialCommandsExtended() {
   else if (cmd == "gps") {
     showGpsDetails();
   }
-  // NEW: Offline commands
-  else if (cmd.startsWith("offline")) {
-    handleOfflineCommands(cmd);
+  // NEW: Offline storage commands
+  else if (cmd == "offline") {
+    printOfflineStatus();
+  } else if (cmd == "offline_stats") {
+    printOfflineStats();
+  } else if (cmd == "offline_sync") {
+    LOG_INFO(MODULE_MAIN, "🔄 Manual offline sync triggered");
+    if (offlineManager.autoSyncOfflineData()) {
+      LOG_INFO(MODULE_MAIN, "✅ Manual sync completed successfully");
+    } else {
+      LOG_WARN(MODULE_MAIN, "⚠️ Manual sync completed with issues");
+    }
+  } else if (cmd == "offline_clear") {
+    LOG_WARN(MODULE_MAIN, "🗑️ Clearing all offline data...");
+    if (offlineManager.clearAllOfflineData()) {
+      LOG_INFO(MODULE_MAIN, "✅ All offline data cleared");
+      offlineOpStats.hasUnsentData = false;
+    } else {
+      LOG_ERROR(MODULE_MAIN, "❌ Failed to clear offline data");
+    }
+  } else if (cmd == "offline_test") {
+    LOG_INFO(MODULE_MAIN, "🧪 Running offline storage stress test...");
+    runOfflineStorageStressTest();
   }
   // NEW: Advanced commands
   else if (cmd == "diag") {
@@ -1326,17 +1352,15 @@ void printHelp() {
   SerialMon.println("optimize     - Apply optimizations");
   SerialMon.println("latency      - Show performance report");
   
-  // NEW: Offline commands section
-  SerialMon.println("\n=== OFFLINE DATA COMMANDS ===");
-  SerialMon.println("offline      - Show offline status");
-  SerialMon.println("offline stats- Show offline statistics");
-  SerialMon.println("offline records - Show stored records");
-  SerialMon.println("offline sync - Manual sync data");
-  SerialMon.println("offline clear- Clear all offline data");
-  SerialMon.println("offline test - Test offline storage");
-  SerialMon.println("offline storage - Show storage info");
-  SerialMon.println("offline enable/disable - Control feature");
-  SerialMon.println("offline force/online - Force offline/online mode");
+  SerialMon.println("\n=== 📦 OFFLINE BACKUP ===");
+  SerialMon.println("offline      - Show backup status");
+  SerialMon.println("offline_stats- Show backup statistics");
+  SerialMon.println("offline_sync - Manual backup sync");
+  SerialMon.println("offline_clear- Clear all backup data");
+  SerialMon.println("offline_test - Test backup system");
+
+
+
   
   // NEW: Advanced commands
   SerialMon.println("\n=== ADVANCED COMMANDS ===");

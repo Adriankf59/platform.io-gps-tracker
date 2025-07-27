@@ -134,10 +134,13 @@ public:
   // ===== DATA RETRIEVAL AND SENDING =====
   bool hasOfflineData() const { return recordCount > 0; }
   int getOfflineRecordCount() const { return recordCount; }
+  // ===== SENDING OPERATIONS =====
   bool startSendingOfflineData();
   bool continueeSendingOfflineData(); // Non-blocking send continuation
   bool sendNextBatch(int batchSize = OFFLINE_BATCH_SEND_SIZE);
   void stopSending();
+  bool autoSyncOfflineData();         // NEW: Auto-sync when network available
+  bool shouldTriggerAutoSync();       // NEW: Check if auto-sync should be triggered
   
   // ===== DATA MANAGEMENT =====
   bool clearAllOfflineData();

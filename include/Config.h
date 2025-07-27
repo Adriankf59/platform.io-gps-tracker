@@ -26,6 +26,9 @@
 #define OFFLINE_AUTO_SYNC true                   // Auto sync when network available
 #define OFFLINE_SYNC_BATCH_SIZE 5                // Records per sync batch
 #define OFFLINE_SYNC_INTERVAL 2000               // Interval between batches (ms)
+#define OFFLINE_SYNC_RETRY_INTERVAL 30000        // Retry interval when sync fails (30s)
+#define OFFLINE_SYNC_MAX_RETRIES 3               // Maximum consecutive retries
+#define OFFLINE_SYNC_MAX_BATCHES_PER_SESSION 5   // Max batches per sync session
 #define OFFLINE_MAINTENANCE_INTERVAL 300000      // Cleanup interval (5 minutes)
 #define OFFLINE_MAX_AGE_HOURS 24                 // Auto-delete records older than 24 hours
 #define OFFLINE_STORAGE_WARNING 15               // Warning when storage near full
