@@ -1,4 +1,4 @@
-// OfflineDataManager.h - Manajemen Data GPS Offline untuk ESP32 Tracker
+// OfflineDataManager.h - Enhanced Offline Data Manager dengan COMPLETE FIXES
 #ifndef OFFLINE_DATA_MANAGER_H
 #define OFFLINE_DATA_MANAGER_H
 
@@ -6,26 +6,26 @@
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
+#include <cstdlib>  // ADDED: For malloc/free
 #include "Config.h"
 #include "Logger.h"
 #include "Utils.h"
 
-// Konfigurasi offline storage
-#define OFFLINE_DATA_FILE "/offline_gps.json"     // File penyimpanan data offline
-#define OFFLINE_INDEX_FILE "/offline_index.txt"   // File index untuk tracking
-#define MAX_OFFLINE_RECORDS 100                   // Maximum 100 records (sekitar 20KB)
-#define OFFLINE_RECORD_SIZE 200                   // Estimasi ukuran per record dalam bytes
-#define OFFLINE_STORAGE_WARNING 15                // Warning saat storage hampir penuh
-#define OFFLINE_BATCH_SEND_SIZE 5                 // Kirim 5 records per batch
-#define OFFLINE_SEND_INTERVAL 2000                // Interval antar batch (2 detik)
+// FIXED: Use Config.h values only - no redefinition
+// All configuration constants are defined in Config.h
+// MAX_OFFLINE_RECORDS, OFFLINE_RECORD_SIZE, etc. from Config.h
+
+// FIXED: Cache configuration untuk performance optimization
+#define UNSENT_COUNT_CACHE_VALIDITY 1000          // 1 second cache validity
 
 // Status offline data manager
 enum OfflineStatus {
-  OFFLINE_STATUS_DISABLED,      // Fitur disabled
-  OFFLINE_STATUS_READY,         // Siap menyimpan data
-  OFFLINE_STATUS_STORING,       // Sedang menyimpan data
-  OFFLINE_STATUS_SENDING,       // Sedang mengirim data tersimpan
-  OFFLINE_STATUS_ERROR          // Error dalam operasi
+  OFFLINE_STATUS_DISABLED,      
+  OFFLINE_STATUS_READY,         
+  OFFLINE_STATUS_STORING,       
+  OFFLINE_STATUS_SENDING,       
+  OFFLINE_STATUS_PRIORITY_SYNC, 
+  OFFLINE_STATUS_ERROR          
 };
 
 // Struktur data GPS offline
@@ -35,14 +35,14 @@ struct OfflineGpsRecord {
   float speed;
   int satellites;
   float battery;
-  unsigned long timestamp;      // Unix timestamp
-  char timestampStr[30];        // ISO8601 string
-  char gpsId[40];              // GPS ID
-  bool sent;                   // Flag apakah sudah terkirim
+  unsigned long timestamp;      
+  char timestampStr[30];        
+  char gpsId[40];              
+  bool sent;                   
+  int sendAttempts;            
   
-  // Constructor
   OfflineGpsRecord() : latitude(0), longitude(0), speed(0), satellites(0), 
-                      battery(0), timestamp(0), sent(false) {
+                      battery(0), timestamp(0), sent(false), sendAttempts(0) {
     memset(timestampStr, 0, sizeof(timestampStr));
     memset(gpsId, 0, sizeof(gpsId));
   }
@@ -50,16 +50,18 @@ struct OfflineGpsRecord {
 
 // Statistik offline storage
 struct OfflineStats {
-  int totalRecordsStored;       // Total records yang pernah disimpan
-  int currentRecordsCount;      // Records saat ini di storage
-  int recordsSentSuccessfully;  // Records yang berhasil dikirim
-  int recordsSendFailed;        // Records yang gagal dikirim
-  unsigned long oldestRecord;   // Timestamp record tertua
-  unsigned long newestRecord;   // Timestamp record terbaru
-  unsigned long lastStoreTime;  // Waktu terakhir store data
-  unsigned long lastSendTime;   // Waktu terakhir send data
-  size_t storageUsed;          // Storage yang digunakan (bytes)
-  size_t storageAvailable;     // Storage yang tersedia (bytes)
+  int totalRecordsStored;       
+  int currentRecordsCount;      
+  int recordsSentSuccessfully;  
+  int recordsSendFailed;        
+  unsigned long oldestRecord;   
+  unsigned long newestRecord;   
+  unsigned long lastStoreTime;  
+  unsigned long lastSendTime;   
+  size_t storageUsed;          
+  size_t storageAvailable;     
+  bool prioritySyncActive;     
+  int prioritySyncProgress;    
   
   void reset() {
     totalRecordsStored = 0;
@@ -72,8 +74,15 @@ struct OfflineStats {
     lastSendTime = 0;
     storageUsed = 0;
     storageAvailable = 0;
+    prioritySyncActive = false;
+    prioritySyncProgress = 0;
   }
 };
+
+// Forward declaration for callback
+typedef bool (*SendDataCallback)(float lat, float lon, float speed, 
+                                int satellites, const char* timestamp, 
+                                float battery);
 
 class OfflineDataManager {
 private:
@@ -93,7 +102,7 @@ private:
   bool clearAllRecords();
   
   // Internal record management
-  OfflineGpsRecord records[MAX_OFFLINE_RECORDS];
+  OfflineGpsRecord records[OFFLINE_MAX_RECORDS];
   int recordCount;
   int nextRecordIndex;
   
@@ -101,6 +110,14 @@ private:
   int currentSendIndex;
   unsigned long lastSendAttempt;
   bool sendInProgress;
+  bool priorityMode;
+  
+  // Send callback function pointer
+  SendDataCallback sendDataFunction;
+  
+  // FIXED: Cache for performance optimization
+  mutable int cachedUnsentCount;
+  mutable unsigned long lastUnsentCountUpdate;
   
   // Statistics update
   void updateStats();
@@ -112,6 +129,16 @@ private:
   void removeOldestRecord();
   String recordToJson(const OfflineGpsRecord& record);
   bool jsonToRecord(const String& json, OfflineGpsRecord& record);
+  bool sendSingleRecord(OfflineGpsRecord& record);
+  void compactRecords();
+  
+  // FIXED: Enhanced helper methods for proper functionality
+  int findNextUnsentRecord(int startIndex);
+  bool sendBatchFromIndex(int startIndex, int maxBatchSize);
+  void completeSyncProcess();
+  
+  // FIXED: Cache management methods
+  void invalidateUnsentCountCache();
   
 public:
   OfflineDataManager();
@@ -125,6 +152,7 @@ public:
   void enable() { isEnabled = true; }
   void disable() { isEnabled = false; }
   bool isEnabledStatus() const { return isEnabled; }
+  void setSendDataCallback(SendDataCallback callback) { sendDataFunction = callback; }
   
   // ===== DATA STORAGE =====
   bool storeGpsData(float lat, float lon, float speed, int satellites, 
@@ -134,15 +162,23 @@ public:
   // ===== DATA RETRIEVAL AND SENDING =====
   bool hasOfflineData() const { return recordCount > 0; }
   int getOfflineRecordCount() const { return recordCount; }
-  bool startSendingOfflineData();
-  bool continueeSendingOfflineData(); // Non-blocking send continuation
-  bool sendNextBatch(int batchSize = OFFLINE_BATCH_SEND_SIZE);
+  
+  // FIXED: Enhanced method to get only unsent records count dengan caching
+  int getUnsentRecordCount() const;
+  
+  bool startSendingOfflineData(bool priorityMode = false);
+  bool continueSendingOfflineData(); // FIXED: Non-blocking send continuation dengan proper logic
+  bool sendNextBatch(int batchSize = 5); // FIXED: Use hardcoded default value
   void stopSending();
+  bool isPrioritySyncActive() const { return priorityMode; }
+  int getSyncProgress() const { return offlineStats.prioritySyncProgress; }
   
   // ===== DATA MANAGEMENT =====
   bool clearAllOfflineData();
   bool removeOldRecords(unsigned long olderThanTimestamp);
+  bool removeExpiredRecords(unsigned long maxAge = 86400); // FIXED: Use hardcoded default (24 hours)
   bool removeOldestRecords(int count);
+  unsigned long getOldestRecordAge() const;
   
   // ===== STATUS AND MONITORING =====
   OfflineStatus getStatus() const { return currentStatus; }
@@ -155,45 +191,45 @@ public:
   void printStats();
   String getStorageReport();
   
+  // FIXED: Enhanced diagnostics methods
+  void printDetailedStatus();
+  void printSyncStatistics();
+  
   // ===== MAINTENANCE =====
-  void performMaintenance();        // Cleanup old records, defragment, etc.
-  bool validateStorage();           // Validate storage integrity
-  bool repairStorage();            // Attempt to repair corrupted storage
+  void performMaintenance();        
+  bool validateStorage();           
+  bool repairStorage();            
+  
+  // ===== TESTING =====
+  // FIXED: Sync test method implementation
+  void runSyncTest();
   
   // ===== CALLBACKS =====
-  // Set callback untuk notifikasi saat data berhasil dikirim
   void setOnDataSentCallback(void (*callback)(int recordsSent, int recordsRemaining));
   void setOnStorageFullCallback(void (*callback)(int recordsStored));
   void setOnErrorCallback(void (*callback)(const char* error));
+  void setOnSyncProgressCallback(void (*callback)(int progress, int total));
   
 private:
   // Callback functions
   void (*onDataSentCallback)(int recordsSent, int recordsRemaining) = nullptr;
   void (*onStorageFullCallback)(int recordsStored) = nullptr;
   void (*onErrorCallback)(const char* error) = nullptr;
+  void (*onSyncProgressCallback)(int progress, int total) = nullptr;
   
   // Helper untuk callback
   void notifyDataSent(int sent, int remaining);
   void notifyStorageFull(int stored);
   void notifyError(const char* error);
+  void notifySyncProgress(int progress, int total);
 };
 
 // ===== GLOBAL FUNCTIONS =====
-// Utility functions untuk integration dengan sistem utama
 namespace OfflineDataUtils {
-  // Format timestamp untuk offline storage
   String formatOfflineTimestamp(unsigned long unixTime);
-  
-  // Estimate storage requirements
   size_t estimateStorageSize(int recordCount);
-  
-  // Check if offline storage is needed based on connection status
   bool shouldStoreOffline(bool hasGpsConnection, bool hasNetworkConnection);
-  
-  // Validate GPS data before storing
   bool isValidGpsData(float lat, float lon, float speed, int satellites);
-  
-  // Create GPS record from current system state
   OfflineGpsRecord createGpsRecord(float lat, float lon, float speed, 
                                   int satellites, const String& timestamp, 
                                   float battery);

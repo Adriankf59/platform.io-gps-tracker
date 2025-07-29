@@ -1,4 +1,4 @@
-// GpsManager.cpp - Implementasi Manajer GPS (Enhanced Version)
+// GpsManager.cpp - FIXED Implementasi Manajer GPS dengan Last Known Position
 #include "GpsManager.h"
 #include <math.h>
 
@@ -27,7 +27,14 @@ GpsManager::GpsManager(TinyGPSPlus& gpsInstance, HardwareSerial& serial)
     checksumErrors(0),
     highUpdateRateEnabled(false),
     currentUpdateRate(1),
-    sbasEnabled(false) {
+    sbasEnabled(false),
+    // FIXED: Initialize last known position variables
+    lastValidLatitude(0.0),
+    lastValidLongitude(0.0),
+    lastValidSpeed(0.0),
+    lastValidSatellites(0),
+    lastValidTime(0),
+    hasValidLastPosition(false) {
   
   // Inisialisasi filter posisi
   memset(positionFilter, 0, sizeof(positionFilter));
@@ -100,6 +107,21 @@ void GpsManager::sendCommand(const char* cmd) {
   delay(10);
 }
 
+// FIXED: Update last valid position
+void GpsManager::updateLastValidPosition() {
+  if (isValid()) {
+    lastValidLatitude = getLatitude();
+    lastValidLongitude = getLongitude();
+    lastValidSpeed = getSpeed();
+    lastValidSatellites = getSatellites();
+    lastValidTime = millis();
+    hasValidLastPosition = true;
+    
+    LOG_DEBUG(MODULE_GPS, "Updated last known position: %.6f, %.6f, %.1f km/h",
+              lastValidLatitude, lastValidLongitude, lastValidSpeed);
+  }
+}
+
 // Update data GPS
 void GpsManager::update() {
   bool dataUpdated = false;
@@ -154,14 +176,22 @@ void GpsManager::update() {
       unsigned long timeToFix = (firstFixTime - moduleStartTime) / 1000;
       LOG_INFO(MODULE_GPS, "⏱️ Time to first fix: %lu seconds", timeToFix);
     }
+    
+    // FIXED: Update last valid position when fix acquired
+    updateLastValidPosition();
   }
   
   // Detect GPS fix lost
   if (!currentFixValid && lastFixValid) {
     LOG_WARN(MODULE_GPS, "⚠️ GPS FIX LOST!");
-    LOG_WARN(MODULE_GPS, "Last known position: %.6f, %.6f", lastLatitude, lastLongitude);
+    LOG_WARN(MODULE_GPS, "Last known position: %.6f, %.6f", lastValidLatitude, lastValidLongitude);
     LOG_WARN(MODULE_GPS, "Satellites: %d, HDOP: %.1f", getSatellites(), currentHDOP);
     fixLostTime = currentTime;
+  }
+  
+  // FIXED: Continuously update last valid position while fix is valid
+  if (currentFixValid) {
+    updateLastValidPosition();
   }
   
   // Update movement tracking
@@ -539,6 +569,14 @@ void GpsManager::printDiagnostics() {
   LOG_INFO(MODULE_GPS, "HDOP: %.1f", currentHDOP);
   LOG_INFO(MODULE_GPS, "Update Rate: %d Hz", currentUpdateRate);
   LOG_INFO(MODULE_GPS, "SBAS: %s", sbasEnabled ? "Enabled" : "Disabled");
+  
+  // FIXED: Show last known position info
+  LOG_INFO(MODULE_GPS, "Has Last Known Pos: %s", hasValidLastPosition ? "YES" : "NO");
+  if (hasValidLastPosition) {
+    unsigned long ageSeconds = (millis() - lastValidTime) / 1000;
+    LOG_INFO(MODULE_GPS, "Last Known Pos: %.6f, %.6f (%lu sec ago)", 
+             lastValidLatitude, lastValidLongitude, ageSeconds);
+  }
   
   if (firstFixAcquired) {
     LOG_INFO(MODULE_GPS, "Time to First Fix: %lu seconds", getTimeToFirstFix());

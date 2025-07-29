@@ -1,4 +1,4 @@
-// GpsManager.h - Manajer Modul GPS untuk ESP32 Tracker (Enhanced Version)
+// GpsManager.h - Fixed Manajer Modul GPS untuk ESP32 Tracker (Enhanced Version)
 #ifndef GPS_MANAGER_H
 #define GPS_MANAGER_H
 
@@ -73,7 +73,15 @@ private:
   GpsFixStatus currentFixStatus;
   GpsQuality quality;
   
-  // Data posisi terakhir
+  // FIXED: Data posisi terakhir yang valid untuk simulasi
+  float lastValidLatitude;
+  float lastValidLongitude;
+  float lastValidSpeed;
+  int lastValidSatellites;
+  unsigned long lastValidTime;
+  bool hasValidLastPosition;
+  
+  // Data posisi saat ini
   float lastLatitude;
   float lastLongitude;
   float distanceFromLastPosition;
@@ -99,6 +107,7 @@ private:
   float calculateDistance(float lat1, float lon1, float lat2, float lon2);
   void updateQualityIndicators();
   void parseNMEASentence();
+  void updateLastValidPosition(); // FIXED: Update last known position
   
 public:
   GpsManager(TinyGPSPlus& gpsInstance, HardwareSerial& serial);
@@ -128,6 +137,14 @@ public:
   float getLongitude() const; // Longitude dengan filter
   float getRawLatitude() const { return gps.location.lat(); }
   float getRawLongitude() const { return gps.location.lng(); }
+  
+  // FIXED: Last known position untuk simulasi
+  float getLastKnownLatitude() const { return lastValidLatitude; }
+  float getLastKnownLongitude() const { return lastValidLongitude; }
+  float getLastKnownSpeed() const { return lastValidSpeed; }
+  int getLastKnownSatellites() const { return lastValidSatellites; }
+  bool hasLastKnownPosition() const { return hasValidLastPosition; }
+  unsigned long getLastValidTime() const { return lastValidTime; }
   
   // ===== DATA PERGERAKAN =====
   float getSpeed() const { return gps.speed.isValid() ? gps.speed.kmph() : 0.0; }
